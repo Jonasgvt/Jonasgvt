@@ -34,6 +34,37 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
+# AUTENTICAÇÃO E SEGURANÇA DO PAINEL
+# ---------------------------------------------------------
+def verificar_senha():
+    """Retorna True se o utilizador introduzir a senha correta."""
+    # Procura a senha definida em Secrets no Streamlit Cloud, ou usa 'zuq123' como padrão local
+    SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
+
+    if "autenticado" not in st.session_state:
+        st.session_state["autenticado"] = False
+
+    if st.session_state["autenticado"]:
+        return True
+
+    # Tela de Login caso não esteja autenticado
+    st.markdown('<div class="main-header">🔒 Acesso Restrito</div>', unsafe_allow_html=True)
+    st.markdown("Por favor, introduza a senha de acesso para utilizar a Central de Automação ZUQ.")
+
+    with st.form("form_login"):
+        senha_digitada = st.text_input("Senha do Painel", type="password")
+        btn_login = st.form_submit_button("🔑 Entrar no Painel")
+
+        if btn_login:
+            if senha_digitada == SENHA_CORRETA:
+                st.session_state["autenticado"] = True
+                st.rerun()
+            else:
+                st.error("❌ Senha incorreta. Tente novamente.")
+                
+    return False
+
+# ---------------------------------------------------------
 # FUNÇÕES AUXILIARES E EXTRAÇÃO
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.08):
@@ -459,51 +490,58 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
         driver.quit()
 
 # ---------------------------------------------------------
-# ESTRUTURA DO DASHBOARD STREAMLIT
+# FLUXO PRINCIPAL COM BLOQUEIO DE SEGURANÇA
 # ---------------------------------------------------------
-st.markdown('<div class="main-header">⛽ Central de Automação ZUQ</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Importe o relatório PDF de abastecimentos para sincronização automática com o sistema ZUQ.</div>', unsafe_allow_html=True)
+if verificar_senha():
+    # Cabeçalho Principal
+    st.markdown('<div class="main-header">⛽ Central de Automação ZUQ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Importe o relatório PDF de abastecimentos para sincronização automática com o sistema ZUQ.</div>', unsafe_allow_html=True)
 
-# Sidebar para Configurações
-with st.sidebar:
-    st.header("⚙️ Configurações do ZUQ")
-    usuario_zuq = st.text_input("Usuário", value="manutencaoverdesmares")
-    senha_zuq = st.text_input("Senha", type="password")
-    url_zuq = st.text_input("URL ZUQ", value="https://app.zuq.com.br")
-    fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
-    
-    st.divider()
-    modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False, help="Marque se quiser ver a janela abrindo na tela. Na nuvem, deixará desmarcado automaticamente.")
-
-# Área Principal
-col_upload, col_dashboard = st.columns([1, 1.2])
-
-with col_upload:
-    st.subheader("1. Ficheiro PDF")
-    uploaded_file = st.file_uploader("Selecione ou arraste o relatório de abastecimento", type=["pdf"])
-
-    if uploaded_file:
-        dados_df = extrair_dados_pdf(uploaded_file)
-        st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
+    # Sidebar para Configurações e Encerramento de Sessão
+    with st.sidebar:
+        st.header("⚙️ Configurações do ZUQ")
+        usuario_zuq = st.text_input("Usuário", value="manutencaoverdesmares")
+        senha_zuq = st.text_input("Senha", type="password")
+        url_zuq = st.text_input("URL ZUQ", value="https://app.zuq.com.br")
+        fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
         
-        with st.expander("👁️ Ver prévia dos abastecimentos lidos"):
-            st.dataframe(dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], use_container_width=True)
+        st.divider()
+        modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False, help="Marque se quiser ver a janela abrindo na tela (funciona apenas em testes locais).")
 
-with col_dashboard:
-    st.subheader("2. Painel de Progresso")
-    
-    m1, m2, m3 = st.columns(3)
-    metric_total = m1.metric("Total no PDF", len(dados_df) if uploaded_file else 0)
-    metric_lancados = m2.metric("Lançados com Sucesso", 0)
-    metric_ignorados = m3.metric("Ignorados / Duplicados", 0)
+        st.divider()
+        if st.button("🚪 Sair do Painel", use_container_width=True):
+            st.session_state["autenticado"] = False
+            st.rerun()
 
-    progress_bar = st.progress(0, text="Aguardando início...")
-    log_container = st.container(height=350, border=True)
+    # Área Principal
+    col_upload, col_dashboard = st.columns([1, 1.2])
 
-    if st.button("🚀 Iniciar Processamento", use_container_width=True):
-        if not uploaded_file:
-            st.error("Por favor, selecione um ficheiro PDF primeiro.")
-        elif not senha_zuq:
-            st.error("Por favor, informe a senha do ZUQ na barra lateral.")
-        else:
-            lancar_no_zuq(dados_df, url_zuq, usuario_zuq, senha_zuq, fornecedor_zuq, modo_visivel, log_container, progress_bar, metric_lancados, metric_ignorados)
+    with col_upload:
+        st.subheader("1. Ficheiro PDF")
+        uploaded_file = st.file_uploader("Selecione ou arraste o relatório de abastecimento", type=["pdf"])
+
+        if uploaded_file:
+            dados_df = extrair_dados_pdf(uploaded_file)
+            st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
+            
+            with st.expander("👁️ Ver prévia dos abastecimentos lidos"):
+                st.dataframe(dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], use_container_width=True)
+
+    with col_dashboard:
+        st.subheader("2. Painel de Progresso")
+        
+        m1, m2, m3 = st.columns(3)
+        metric_total = m1.metric("Total no PDF", len(dados_df) if uploaded_file else 0)
+        metric_lancados = m2.metric("Lançados com Sucesso", 0)
+        metric_ignorados = m3.metric("Ignorados / Duplicados", 0)
+
+        progress_bar = st.progress(0, text="Aguardando início...")
+        log_container = st.container(height=350, border=True)
+
+        if st.button("🚀 Iniciar Processamento", use_container_width=True):
+            if not uploaded_file:
+                st.error("Por favor, selecione um ficheiro PDF primeiro.")
+            elif not senha_zuq:
+                st.error("Por favor, informe a senha do ZUQ na barra lateral.")
+            else:
+                lancar_no_zuq(dados_df, url_zuq, usuario_zuq, senha_zuq, fornecedor_zuq, modo_visivel, log_container, progress_bar, metric_lancados, metric_ignorados)
