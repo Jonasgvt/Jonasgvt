@@ -14,99 +14,18 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ---------------------------------------------------------
-# CONFIGURAÇÃO DE ESTILO E DESIGN MODERNO
+# CONFIGURAÇÃO DA PÁGINA STREAMLIT
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Central de Automação ZUQ",
+    page_title="Automação ZUQ - Abastecimentos",
     page_icon="⛽",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Injeção de CSS para Design Minimalista / Moderno (SaaS Style)
-st.markdown("""
-    <style>
-    /* Estilo Geral de Fundo e Tipografia */
-    .stApp {
-        background-color: #F8FAFC;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    
-    /* Remover topo padrão do Streamlit */
-    header[data-testid="stHeader"] {
-        background-color: transparent;
-    }
-    
-    /* Cabeçalhos Elegantes */
-    .brand-title {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #0F172A;
-        letter-spacing: -0.02em;
-        margin-bottom: 0.2rem;
-    }
-    .brand-sub {
-        font-size: 0.95rem;
-        color: #64748B;
-        margin-bottom: 2rem;
-    }
-    
-    /* Customização dos Cards de Métricas */
-    div[data-testid="stMetric"] {
-        background: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        box-shadow: 0px 1px 3px rgba(0, 0, 0, 0.05);
-    }
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.85rem !important;
-        font-weight: 500 !important;
-        color: #64748B !important;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.8rem !important;
-        font-weight: 700 !important;
-        color: #0F172A !important;
-    }
-    
-    /* Customização de Botões */
-    .stButton>button {
-        background-color: #0F172A !important;
-        color: #FFFFFF !important;
-        font-weight: 600 !important;
-        border-radius: 8px !important;
-        border: none !important;
-        height: 2.8rem !important;
-        transition: all 0.2s ease;
-        box-shadow: 0px 2px 4px rgba(15, 23, 42, 0.1);
-    }
-    .stButton>button:hover {
-        background-color: #1E293B !important;
-        transform: translateY(-1px);
-    }
-    
-    /* Área de Upload Limpa */
-    div[data-testid="stFileUploader"] {
-        background: #FFFFFF;
-        border: 1px dashed #CBD5E1;
-        border-radius: 12px;
-        padding: 1rem;
-    }
-    
-    /* Sidebar Minimalista */
-    section[data-testid="stSidebar"] {
-        background-color: #FFFFFF;
-        border-right: 1px solid #E2E8F0;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 # ---------------------------------------------------------
-# AUTENTICAÇÃO E SEGURANÇA DO PAINEL
+# AUTENTICAÇÃO POR SENHA
 # ---------------------------------------------------------
 def verificar_senha():
-    """Retorna True se o utilizador introduzir a senha correta."""
     SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
 
     if "autenticado" not in st.session_state:
@@ -115,23 +34,19 @@ def verificar_senha():
     if st.session_state["autenticado"]:
         return True
 
-    # Interface de Login Minimalista
-    col1, col2, col3 = st.columns([1, 1.2, 1])
-    with col2:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown('<div class="brand-title" style="text-align: center;">🔒 Acesso Restrito</div>', unsafe_allow_html=True)
-        st.markdown('<div class="brand-sub" style="text-align: center;">Introduza a palavra-passe para aceder à central ZUQ.</div>', unsafe_allow_html=True)
+    st.title("🔒 Acesso Restrito")
+    st.write("Por favor, introduza a palavra-passe para aceder ao painel.")
 
-        with st.form("form_login"):
-            senha_digitada = st.text_input("Palavra-passe de acesso", type="password")
-            btn_login = st.form_submit_button("Entrar", use_container_width=True)
+    with st.form("form_login"):
+        senha_digitada = st.text_input("Palavra-passe", type="password")
+        btn_login = st.form_submit_button("Entrar")
 
-            if btn_login:
-                if senha_digitada == SENHA_CORRETA:
-                    st.session_state["autenticado"] = True
-                    st.rerun()
-                else:
-                    st.error("❌ Palavra-passe incorreta.")
+        if btn_login:
+            if senha_digitada == SENHA_CORRETA:
+                st.session_state["autenticado"] = True
+                st.rerun()
+            else:
+                st.error("❌ Palavra-passe incorreta.")
                 
     return False
 
@@ -417,7 +332,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 
         for idx, row in df.iterrows():
             progress = (idx + 1) / total_registros
-            progress_bar.progress(progress, text=f"Processando {idx+1} de {total_registros}")
+            progress_bar.progress(progress, text=f"Abastecimento {idx+1} de {total_registros}")
 
             log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L | R${row['valor_unitario']}")
 
@@ -550,7 +465,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
 
-        log_container.success("🎉 Todos os abastecimentos foram processados!")
+        log_container.success("🎉 Todos os abastecimentos foram processados com sucesso!")
 
     except Exception as e:
         log_container.error(f"❌ Erro durante o processo: {e}")
@@ -558,54 +473,52 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
         driver.quit()
 
 # ---------------------------------------------------------
-# FLUXO PRINCIPAL
+# INTERFACE PRINCIPAL DO UTILIZADOR
 # ---------------------------------------------------------
 if verificar_senha():
-    # Cabeçalho Limpo
-    st.markdown('<div class="brand-title">Gestão de Abastecimentos</div>', unsafe_allow_html=True)
-    st.markdown('<div class="brand-sub">Sincronização automática de dados PDF para o portal ZUQ.</div>', unsafe_allow_html=True)
+    st.title("⛽ Central de Automação ZUQ")
+    st.markdown("Importe o relatório PDF de abastecimentos para sincronização automática com o sistema ZUQ.")
 
-    # Sidebar Minimalista
+    # Sidebar
     with st.sidebar:
-        st.markdown("### **Configurações ZUQ**")
+        st.header("⚙️ Configurações do ZUQ")
         usuario_zuq = st.text_input("Usuário", value="manutencaoverdesmares")
-        senha_zuq = st.text_input("Senha ZUQ", type="password")
-        url_zuq = st.text_input("URL", value="https://app.zuq.com.br")
+        senha_zuq = st.text_input("Senha", type="password")
+        url_zuq = st.text_input("URL ZUQ", value="https://app.zuq.com.br")
         fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
         
         st.divider()
-        modo_visivel = st.checkbox("Modo Visível (Debug Local)", value=False)
+        modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False)
 
         st.divider()
-        if st.button("🚪 Terminar Sessão", use_container_width=True):
+        if st.button("🚪 Sair do Painel", use_container_width=True):
             st.session_state["autenticado"] = False
             st.rerun()
 
-    # Layout Principal
-    col_upload, col_dashboard = st.columns([1, 1.3], gap="large")
+    # Área Principal
+    col_upload, col_dashboard = st.columns([1, 1.2])
 
     with col_upload:
-        st.markdown("##### **1. Upload de Ficheiro**")
-        uploaded_file = st.file_uploader("Arraste o relatório PDF de abastecimento", type=["pdf"])
+        st.subheader("1. Ficheiro PDF")
+        uploaded_file = st.file_uploader("Selecione ou arraste o relatório de abastecimento", type=["pdf"])
 
         if uploaded_file:
             dados_df = extrair_dados_pdf(uploaded_file)
-            st.success(f"**{len(dados_df)}** registos extraídos.")
+            st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
             
-            with st.expander("👁️ Prévia dos dados lidos"):
+            with st.expander("👁️ Ver prévia dos abastecimentos lidos"):
                 st.dataframe(dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], use_container_width=True)
 
     with col_dashboard:
-        st.markdown("##### **2. Monitor de Execução**")
+        st.subheader("2. Painel de Progresso")
         
         m1, m2, m3 = st.columns(3)
-        metric_total = m1.metric("Total de Registos", len(dados_df) if uploaded_file else 0)
-        metric_lancados = m2.metric("Concluídos", 0)
-        metric_ignorados = m3.metric("Ignorados", 0)
+        metric_total = m1.metric("Total no PDF", len(dados_df) if uploaded_file else 0)
+        metric_lancados = m2.metric("Lançados com Sucesso", 0)
+        metric_ignorados = m3.metric("Ignorados / Duplicados", 0)
 
-        st.write("")
-        progress_bar = st.progress(0, text="Aguardando ficheiro e comando...")
-        log_container = st.container(height=320, border=True)
+        progress_bar = st.progress(0, text="Aguardando início...")
+        log_container = st.container(height=350, border=True)
 
         if st.button("🚀 Iniciar Lançamentos Automáticos", use_container_width=True):
             if not uploaded_file:
