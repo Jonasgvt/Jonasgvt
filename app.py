@@ -1,31 +1,48 @@
 import os
 import re
 import time
+from datetime import datetime
 import pandas as pd
 import pypdf
 import streamlit as st
-from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-
-# ---------------------------------------------------------
-# CONFIGURAÇÃO DA PÁGINA STREAMLIT
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="Automação ZUQ - Abastecimentos",
-    page_icon="⛽",
-    layout="wide"
+from selenium.common.exceptions import (
+    WebDriverException,
+    TimeoutException,
+    NoSuchElementException,
+    StaleElementReferenceException
 )
 
 # ---------------------------------------------------------
-# AUTENTICAÇÃO POR SENHA
+# CONFIGURAÇÃO DE ESTILO E PÁGINA
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="Gestão de Abastecimentos ZUQ",
+    page_icon="⛽",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+    <style>
+    .main-header { font-size: 2.2rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0.5rem; }
+    .sub-header { font-size: 1rem; color: #6B7280; margin-bottom: 1.5rem; }
+    .stButton>button { background-color: #2563EB; color: white; font-weight: 600; border-radius: 8px; height: 3rem; }
+    .stButton>button:hover { background-color: #1D4ED8; }
+    </style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# AUTENTICAÇÃO E SEGURANÇA DO PAINEL
 # ---------------------------------------------------------
 def verificar_senha():
+    """Retorna True se o utilizador introduzir a senha correta."""
     SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
 
     if "autenticado" not in st.session_state:
@@ -34,26 +51,26 @@ def verificar_senha():
     if st.session_state["autenticado"]:
         return True
 
-    st.title("🔒 Acesso Restrito")
-    st.write("Por favor, introduza a palavra-passe para aceder ao painel.")
+    st.markdown('<div class="main-header">🔒 Acesso Restrito</div>', unsafe_allow_html=True)
+    st.markdown("Por favor, introduza a senha de acesso para utilizar a Central de Automação ZUQ.")
 
     with st.form("form_login"):
-        senha_digitada = st.text_input("Palavra-passe", type="password")
-        btn_login = st.form_submit_button("Entrar")
+        senha_digitada = st.text_input("Senha do Painel", type="password")
+        btn_login = st.form_submit_button("🔑 Entrar no Painel")
 
         if btn_login:
             if senha_digitada == SENHA_CORRETA:
                 st.session_state["autenticado"] = True
                 st.rerun()
             else:
-                st.error("❌ Palavra-passe incorreta.")
+                st.error("❌ Senha incorreta. Tente novamente.")
                 
     return False
 
 # ---------------------------------------------------------
-# FUNÇÕES AUXILIARES E EXTRAÇÃO
+# FUNÇÕES AUXILIARES E EXTRAÇÃO DE PDF
 # ---------------------------------------------------------
-def digitar_devagar(elemento, texto, atraso=0.08):
+def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
         elemento.send_keys(caractere)
         time.sleep(atraso)
@@ -117,10 +134,46 @@ def fechar_alerta_se_existir(driver, log_container):
         texto = alert.text
         alert.accept()
         log_container.warning(f"⚠️ Alerta confirmado: {texto}")
-        time.sleep(1)
+        time.sleep(0.8)
         return True
     except:
         return False
+
+# ---------------------------------------------------------
+# RESILIÊNCIA DE REDE (RETRY LOGIC & TIMEOUT SEGURO)
+# ---------------------------------------------------------
+def navegar_com_timeout_seguro(driver, url, timeout=12, log_container=None):
+    driver.set_page_load_timeout(timeout)
+    try:
+        driver.get(url)
+    except TimeoutException:
+        if log_container:
+            log_container.warning(f"⏳ Tempo limite de {timeout}s atingido em {url}. Interrompendo carregamentos secundários...")
+        driver.execute_script("window.stop();")
+        time.sleep(0.5)
+
+def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container=None):
+    excecoes_capturadas = (
+        WebDriverException, 
+        TimeoutException, 
+        NoSuchElementException, 
+        StaleElementReferenceException
+    )
+    
+    for tentativa in range(1, max_tentativas + 1):
+        try:
+            return func()
+        except excecoes_capturadas as e:
+            tempo_espera = intervalo_base * (2 ** (tentativa - 1))
+            msg_erro = f"⚠️ Instabilidade de rede/timeout (Tentativa {tentativa}/{max_tentativas}). Aguardando {tempo_espera:.1f}s..."
+            
+            if log_container:
+                log_container.warning(msg_erro)
+            
+            if tentativa == max_tentativas:
+                raise e
+            
+            time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
 # CHECAGEM DE DUPLICATAS ROBUSTA
@@ -130,17 +183,16 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
         precisa_filtrar = (placa != ultima_placa_filtrada) or ("/fuel" not in driver.current_url)
 
         if precisa_filtrar:
-            driver.get(f"{base_url}/secure/manager/maintenance/#/fuel")
-            time.sleep(2.5)
+            navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12, log_container=log_container)
+            time.sleep(1.5)
 
             try:
                 btn_filtro = wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
                 btn_filtro.click()
-                time.sleep(1.0)
+                time.sleep(0.8)
 
                 select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
                 if select_filtro:
-                    from selenium.webdriver.support.ui import Select
                     Select(select_filtro[0]).select_by_visible_text("Placa")
                     time.sleep(0.3)
 
@@ -160,8 +212,8 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 input_modal.send_keys(Keys.BACKSPACE)
                 time.sleep(0.3)
 
-                digitar_devagar(input_modal, placa, atraso=0.08)
-                time.sleep(1.5)
+                digitar_devagar(input_modal, placa, atraso=0.05)
+                time.sleep(1.2)
 
                 opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
                 
@@ -169,23 +221,23 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                     log_container.warning(f"⚠️ Placa {placa} não cadastrada no ZUQ.")
                     btn_cancelar = driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]")
                     btn_cancelar.click()
-                    time.sleep(1.0)
+                    time.sleep(0.8)
                     fechar_alerta_se_existir(driver, log_container)
                     return False, False, placa
 
                 opcoes[0].click()
-                time.sleep(0.5)
+                time.sleep(0.4)
 
                 try:
                     driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
                 except:
                     input_modal.send_keys(Keys.ESCAPE)
                 
-                time.sleep(0.8)
+                time.sleep(0.5)
 
                 btn_confirmar = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]")))
                 btn_confirmar.click()
-                time.sleep(2.0)
+                time.sleep(1.5)
 
                 fechar_alerta_se_existir(driver, log_container)
 
@@ -232,27 +284,27 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
 
             try:
                 link_registro = linha_para_remover.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
-                driver.get(link_registro.get_attribute("href"))
+                navegar_com_timeout_seguro(driver, link_registro.get_attribute("href"), timeout=12, log_container=log_container)
             except:
                 linha_para_remover.click()
 
-            time.sleep(2.5)
+            time.sleep(1.8)
 
             try:
                 btn_editar = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]")))
                 btn_editar.click()
-                time.sleep(2.0)
+                time.sleep(1.5)
             except:
                 pass
 
             try:
                 btn_remover = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[@ng-click='deleteFuel()' or contains(.,'Remover')]")))
                 btn_remover.click()
-                time.sleep(1.5)
+                time.sleep(1.2)
 
                 fechar_alerta_se_existir(driver, log_container)
                 log_container.info("✅ Réplica removida com sucesso.")
-                time.sleep(1.5)
+                time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
                 log_container.error(f"❌ Erro ao remover duplicado: {e_rem}")
@@ -268,20 +320,30 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
     return True, False, placa
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE LANÇAMENTO COM SUPORTE A NUVEM
+# PROCESSAMENTO PRINCIPAL DE LANÇAMENTO
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_container, progress_bar, metric_lancados, metric_ignorados):
-    options = webdriver.ChromeOptions()
-    
-    if not MODO_VISIVEL:
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-    else:
-        options.add_argument("--start-maximized")
+    df_relatorio = df.copy()
+    df_relatorio['status_lancamento'] = 'Pendente'
+    df_relatorio['data_processamento'] = ''
+    df_relatorio['observacao'] = ''
 
+    options = webdriver.ChromeOptions()
+    options.page_load_strategy = 'eager'
+    
+    # Argumentos essenciais para execuções Headless/Linux (Streamlit Cloud)
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-features=VizDisplayCompositor")
+    options.add_argument("--remote-debugging-port=9222")
+    options.add_argument("--window-size=1920,1080")
+    
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    options.add_experimental_option("prefs", prefs)
+
+    # Inicialização do WebDriver adaptada ao Linux do Streamlit Cloud
     if os.path.exists("/usr/bin/chromium"):
         options.binary_location = "/usr/bin/chromium"
         service = Service("/usr/bin/chromedriver")
@@ -291,87 +353,156 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     else:
         service = Service(ChromeDriverManager().install())
 
-    driver = webdriver.Chrome(service=service, options=options)
-    wait = WebDriverWait(driver, 20)
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e_driver:
+        log_container.warning("⚠️ Tentando inicialização via Selenium Manager...")
+        driver = webdriver.Chrome(options=options)
+
+    driver.set_page_load_timeout(15)
+    driver.set_script_timeout(10)
+    wait = WebDriverWait(driver, 15)
 
     df = df.sort_values(by="placa").reset_index(drop=True)
 
     qtd_lancados = 0
     qtd_ignorados = 0
+    total_registros = len(df)
 
     try:
-        log_container.info("🌐 Conectando ao sistema ZUQ...")
-        driver.get(URL_ZUQ)
-        time.sleep(2)
-        
-        # Login
-        campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
-        campo_usuario.clear()
-        digitar_devagar(campo_usuario, USUARIO, atraso=0.05)
-        
-        try:
-            campo_senha = driver.find_element(By.NAME, "password")
-        except:
-            campo_senha = driver.find_element(By.XPATH, "//input[@type='password']")
+        log_container.info("🌐 Conectando ao portal ZUQ (modo otimizado)...")
+
+        def acao_login():
+            navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
+            campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
+            campo_usuario.clear()
+            digitar_devagar(campo_usuario, USUARIO, atraso=0.05)
             
-        campo_senha.clear()
-        digitar_devagar(campo_senha, SENHA, atraso=0.05)
-        time.sleep(0.3)
+            try:
+                campo_senha = driver.find_element(By.NAME, "password")
+            except NoSuchElementException:
+                campo_senha = driver.find_element(By.XPATH, "//input[@type='password']")
+                
+            campo_senha.clear()
+            digitar_devagar(campo_senha, SENHA, atraso=0.05)
+            time.sleep(0.3)
+            
+            try:
+                driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
+            except NoSuchElementException:
+                campo_senha.send_keys(Keys.ENTER)
+
+        executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
         
-        try:
-            driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
-        except:
-            campo_senha.send_keys(Keys.ENTER)
-        
-        log_container.info("Autenticando sessão...")
-        time.sleep(5)
+        log_container.info("Autenticando no sistema...")
+        time.sleep(3)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
-        total_registros = len(df)
         ultima_placa_filtrada = ""
 
         for idx, row in df.iterrows():
             progress = (idx + 1) / total_registros
             progress_bar.progress(progress, text=f"Abastecimento {idx+1} de {total_registros}")
+            horario_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L | R${row['valor_unitario']}")
+            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L")
 
             fechar_alerta_se_existir(driver, log_container)
 
-            placa_existe, ja_cadastrado, ultima_placa_filtrada = tratar_duplicados_se_existirem(
-                driver, wait, base_url, row['placa'], row['data'], row['km'], row['quantidade'], row['valor_unitario'], ultima_placa_filtrada, log_container
-            )
-
-            if not placa_existe or ja_cadastrado:
+            # Verificar duplicados
+            try:
+                placa_existe, ja_cadastrado, ultima_placa_filtrada = executar_com_retry(
+                    lambda: tratar_duplicados_se_existirem(
+                        driver, wait, base_url, row['placa'], row['data'], row['km'], row['quantidade'], row['valor_unitario'], ultima_placa_filtrada, log_container
+                    ),
+                    max_tentativas=3,
+                    log_container=log_container
+                )
+            except Exception as e_dup:
+                log_container.error(f"❌ Erro ao verificar duplicatas para a placa {row['placa']}: {e_dup}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                df_relatorio.at[idx, 'observacao'] = f"Falha na verificação de duplicados: {str(e_dup)}"
                 continue
 
-            # Lançamento
-            driver.get(f"{base_url}/secure/manager/maintenance/#/fuel/new")
-            time.sleep(2.5)
+            if not placa_existe:
+                qtd_ignorados += 1
+                metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada no ZUQ'
+                continue
+
+            if ja_cadastrado:
+                qtd_ignorados += 1
+                metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Duplicado'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                df_relatorio.at[idx, 'observacao'] = 'Registro já existente no sistema ZUQ'
+                continue
+
+            # Abrir Formulário de Novo Lançamento
+            def abrir_formulario():
+                url_form = f"{base_url}/secure/manager/maintenance/#/fuel/new"
+                navegar_com_timeout_seguro(driver, url_form, timeout=10, log_container=log_container)
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]")))
 
             try:
+                executar_com_retry(abrir_formulario, max_tentativas=3, log_container=log_container)
+            except Exception as e_nav:
+                log_container.error(f"❌ Falha ao carregar formulário para {row['placa']}: {e_nav}")
+                qtd_ignorados += 1
+                metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                df_relatorio.at[idx, 'observacao'] = f"Falha ao carregar formulário: {str(e_nav)}"
+                continue
+
+            # Selecionar Veículo
+            def selecionar_veiculo():
                 elem_veiculo = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]")))
                 elem_veiculo.click()
-                time.sleep(0.5)
+                time.sleep(0.3)
                 
                 input_veiculo = driver.find_element(By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]//input")
-                digitar_devagar(input_veiculo, row['placa'], atraso=0.08)
-                time.sleep(1.8)
+                input_veiculo.send_keys(Keys.CONTROL + "a")
+                input_veiculo.send_keys(Keys.BACKSPACE)
+                digitar_devagar(input_veiculo, row['placa'], atraso=0.05)
+                time.sleep(1.0)
                 
                 opcoes_form = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{row['placa']}')]")
                 if not opcoes_form:
-                    qtd_ignorados += 1
-                    metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
-                    continue
+                    return False
 
                 opcoes_form[0].click()
-                time.sleep(0.8)
-            except Exception as e:
-                log_container.error(f"Erro na seleção do veículo {row['placa']}: {e}")
+                time.sleep(0.4)
+                return True
+
+            try:
+                veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
+                if not veiculo_encontrado:
+                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado nas opções do formulário.")
+                    qtd_ignorados += 1
+                    metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                    
+                    df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
+                    df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                    df_relatorio.at[idx, 'observacao'] = 'Veículo não localizado nas opções do formulário'
+                    continue
+            except Exception as e_v:
+                log_container.error(f"Erro na seleção do veículo {row['placa']}: {e_v}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                df_relatorio.at[idx, 'observacao'] = f"Erro ao selecionar veículo: {str(e_v)}"
                 continue
 
             # Data
@@ -383,7 +514,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                     elem.dispatchEvent(new Event('input', { bubbles: true }));
                     elem.dispatchEvent(new Event('change', { bubbles: true }));
                 """, campo_data, data_iso)
-            except: pass
+            except Exception: pass
 
             # Hora
             try:
@@ -392,94 +523,113 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 campo_hora.send_keys(Keys.CONTROL + "a")
                 campo_hora.send_keys(Keys.BACKSPACE)
                 hora_formatada = row['hora'][:5] if len(row['hora']) >= 5 else row['hora']
-                digitar_devagar(campo_hora, hora_formatada, atraso=0.08)
-            except: pass
+                digitar_devagar(campo_hora, hora_formatada, atraso=0.05)
+            except Exception: pass
 
             # Litros
             try:
                 campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, row['quantidade'])
-            except: pass
+            except Exception: pass
 
             # Preço
             try:
                 campo_preco = driver.find_element(By.NAME, "price")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, row['valor_unitario'])
-            except: pass
+            except Exception: pass
 
             # Odômetro
             try:
                 campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, row['km'])
-            except: pass
+            except Exception: pass
 
             # Fornecedor
             try:
                 elem_fornecedor = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Fornecedor')]/following::div[contains(@class,'selectize-input')][1]")))
                 elem_fornecedor.click()
-                time.sleep(0.5)
+                time.sleep(0.3)
                 
                 input_fornecedor = driver.find_element(By.XPATH, "//label[contains(text(),'Fornecedor')]/following::div[contains(@class,'selectize-input')][1]//input")
-                digitar_devagar(input_fornecedor, FORNECEDOR, atraso=0.08)
-                time.sleep(1.8)
+                digitar_devagar(input_fornecedor, FORNECEDOR, atraso=0.05)
+                time.sleep(1.0)
                 input_fornecedor.send_keys(Keys.ARROW_DOWN)
                 input_fornecedor.send_keys(Keys.ENTER)
-                time.sleep(0.5)
-            except: pass
+                time.sleep(0.3)
+            except Exception: pass
 
             # Documento fiscal
             try:
                 campo_doc = driver.find_element(By.XPATH, "//label[contains(text(),'Documento fiscal')]/following::input[1]")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_doc, row['cupom'])
-            except: pass
+            except Exception: pass
 
             # Salvar
-            salvo = False
-            for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
-                try:
-                    btn_salvar = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                    btn_salvar.click()
-                    time.sleep(1.8)
-
-                    erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
-                    if erros_km and erros_km[0].is_displayed():
-                        log_container.warning("⚠️ Conflito no Odômetro! Limpando campo e salvando...")
-                        campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
-                        driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
-                        time.sleep(0.8)
+            def salvar_registro():
+                for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
+                    try:
+                        btn_salvar = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
                         btn_salvar.click()
-                        time.sleep(1.8)
+                        time.sleep(1.2)
 
-                    salvo = True
+                        erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
+                        if erros_km and erros_km[0].is_displayed():
+                            log_container.warning("⚠️ Conflito no Odômetro! Limpando campo e salvando...")
+                            campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
+                            driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
+                            time.sleep(0.5)
+                            btn_salvar.click()
+                            time.sleep(1.2)
+
+                        return True
+                    except Exception: 
+                        continue
+                return False
+
+            salvo = False
+            try:
+                salvo = executar_com_retry(salvar_registro, max_tentativas=3, log_container=log_container)
+                if salvo:
                     ultima_placa_filtrada = ""
-                    break
-                except: continue
+            except Exception as e_save:
+                log_container.error(f"❌ Não foi possível salvar o registro para {row['placa']}: {e_save}")
+                df_relatorio.at[idx, 'observacao'] = f"Erro no clique de salvar: {str(e_save)}"
 
-            time.sleep(1.5)
+            time.sleep(1.0)
             fechar_alerta_se_existir(driver, log_container)
 
             if salvo:
                 qtd_lancados += 1
                 metric_lancados.metric("Lançados com Sucesso", qtd_lancados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Sucesso'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso no ZUQ'
             else:
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
+                
+                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
+                df_relatorio.at[idx, 'data_processamento'] = horario_atual
+                if not df_relatorio.at[idx, 'observacao']:
+                    df_relatorio.at[idx, 'observacao'] = 'Falha no preenchimento/salvamento do formulário'
 
-        log_container.success("🎉 Todos os abastecimentos foram processados com sucesso!")
+        log_container.success("🎉 Todos os abastecimentos foram processados!")
 
     except Exception as e:
-        log_container.error(f"❌ Erro durante o processo: {e}")
+        log_container.error(f"❌ Erro crítico durante o processamento: {e}")
     finally:
         driver.quit()
 
+    return df_relatorio
+
 # ---------------------------------------------------------
-# INTERFACE PRINCIPAL DO UTILIZADOR
+# FLUXO PRINCIPAL DA APLICAÇÃO
 # ---------------------------------------------------------
 if verificar_senha():
-    st.title("⛽ Central de Automação ZUQ")
-    st.markdown("Importe o relatório PDF de abastecimentos para sincronização automática com o sistema ZUQ.")
+    st.markdown('<div class="main-header">⛽ Central de Automação ZUQ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Importe o relatório PDF de abastecimentos para sincronização automática com o sistema ZUQ.</div>', unsafe_allow_html=True)
 
-    # Sidebar
     with st.sidebar:
         st.header("⚙️ Configurações do ZUQ")
         usuario_zuq = st.text_input("Usuário", value="manutencaoverdesmares")
@@ -488,14 +638,13 @@ if verificar_senha():
         fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
         
         st.divider()
-        modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False)
+        modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False, help="Marque se quiser ver a janela abrindo na tela (funciona apenas em testes locais).")
 
         st.divider()
         if st.button("🚪 Sair do Painel", use_container_width=True):
             st.session_state["autenticado"] = False
             st.rerun()
 
-    # Área Principal
     col_upload, col_dashboard = st.columns([1, 1.2])
 
     with col_upload:
@@ -513,17 +662,40 @@ if verificar_senha():
         st.subheader("2. Painel de Progresso")
         
         m1, m2, m3 = st.columns(3)
-        metric_total = m1.metric("Total no PDF", len(dados_df) if uploaded_file else 0)
+        metric_total = m1.metric("Total no PDF", len(dados_df) if uploaded_file and 'dados_df' in locals() else 0)
         metric_lancados = m2.metric("Lançados com Sucesso", 0)
         metric_ignorados = m3.metric("Ignorados / Duplicados", 0)
 
         progress_bar = st.progress(0, text="Aguardando início...")
         log_container = st.container(height=350, border=True)
 
-        if st.button("🚀 Iniciar Lançamentos Automáticos", use_container_width=True):
+        if st.button("🚀 Iniciar Processamento", use_container_width=True):
             if not uploaded_file:
                 st.error("Por favor, selecione um ficheiro PDF primeiro.")
             elif not senha_zuq:
                 st.error("Por favor, informe a senha do ZUQ na barra lateral.")
             else:
-                lancar_no_zuq(dados_df, url_zuq, usuario_zuq, senha_zuq, fornecedor_zuq, modo_visivel, log_container, progress_bar, metric_lancados, metric_ignorados)
+                df_resultado = lancar_no_zuq(
+                    dados_df, url_zuq, usuario_zuq, senha_zuq, 
+                    fornecedor_zuq, modo_visivel, log_container, 
+                    progress_bar, metric_lancados, metric_ignorados
+                )
+
+                if df_resultado is not None:
+                    csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
+
+                    st.divider()
+                    st.subheader("📋 Relatório Final de Auditoria")
+                    
+                    st.dataframe(
+                        df_resultado[['placa', 'data', 'quantidade', 'status_lancamento', 'observacao']], 
+                        use_container_width=True
+                    )
+
+                    st.download_button(
+                        label="📥 Baixar Relatório de Processamento (CSV)",
+                        data=csv_data,
+                        file_name=f"relatorio_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
