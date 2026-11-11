@@ -175,7 +175,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (AJUSTADA DE ACORDO COM ERRO DO MENU)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (TRATAMENTO DE POPUPS & LOOKUP)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -185,7 +185,7 @@ def preencher_campo_js(driver, elemento, valor):
         arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
     """, elemento, valor)
 
-def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, data_fim, log_container=None):
+def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha, data_inicio, data_fim, log_container=None):
     download_dir = tempfile.mkdtemp()
 
     options = webdriver.ChromeOptions()
@@ -234,7 +234,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
             driver.switch_to.frame(iframes[0])
 
         if log_container:
-            log_container.info("✍️ Preenchendo credenciais...")
+            log_container.info("✍️ Preenchendo credenciais no Liveposto...")
 
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "input")))
 
@@ -275,13 +275,11 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
             campo_pass.send_keys(Keys.ENTER)
 
         time.sleep(6)
-
-        # RETORNA O FOCO PARA A PÁGINA RAIZ (GARANTE QUE O MENU LATERAL SEJA VISÍVEL)
         driver.switch_to.default_content()
 
-        # 2. SELEÇÃO DO MENU LATERAL (Usando IDs e XPATHs extraídos da tela)
+        # 2. SELEÇÃO DO MENU LATERAL
         if log_container:
-            log_container.info("📂 Navegando para o relatório de vendas por veículo...")
+            log_container.info("📂 Navegando para a emissão de relatórios...")
 
         xpath_menu = (
             "//a[contains(@id,'MenuLateralGamma-item-50925')] | "
@@ -294,7 +292,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
         driver.execute_script("arguments[0].click();", menu_relatorio)
         time.sleep(4)
 
-        # Se o relatório abrir em iframe ou popup
+        # 3. INTERAÇÃO COM A MODAL / POPUP (IFRAME DO WEBRUN)
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
@@ -302,56 +300,94 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
         if frames_modal:
             driver.switch_to.frame(frames_modal[-1])
 
-        # 3. SELEÇÃO DO CLIENTE / EMPRESA DENTRO DA MODAL
-        if log_container:
-            log_container.info(f"🏢 Selecionando o cliente: '{cliente_alvo}'...")
-
-        try:
-            input_cliente = wait.until(EC.element_to_be_clickable((
-                By.XPATH, "//label[contains(text(),'Cliente')]/following::input[1] | //label[contains(text(),'Cliente')]/following::div[contains(@class,'lookup')][1]"
-            )))
-            input_cliente.click()
-            time.sleep(1)
-
-            opcao_cliente = wait.until(EC.element_to_be_clickable((
-                By.XPATH, f"//li[contains(text(),'{cliente_alvo}')] | //div[contains(text(),'{cliente_alvo}')] | //*[contains(text(),'{cliente_alvo}')]"
-            )))
-            opcao_cliente.click()
-            time.sleep(1)
-        except Exception as e_cli:
+        # SELEÇÃO DO CLIENTE NO COMBOBOX
+        if cliente_alvo:
             if log_container:
-                log_container.warning(f"⚠️ Usando cliente padrão da tela ({e_cli}).")
+                log_container.info(f"🏢 Selecionando o Cliente: '{cliente_alvo}'...")
+            try:
+                selects = driver.find_elements(By.TAG_NAME, "select")
+                if selects:
+                    Select(selects[0]).select_by_visible_text(cliente_alvo)
+                else:
+                    elem_cli = driver.find_element(By.XPATH, "//*[contains(@id,'WFRInput') or contains(@class,'lookup')]")
+                    elem_cli.click()
+                    time.sleep(1)
+                    item_cli = driver.find_element(By.XPATH, f"//*[contains(text(),'{cliente_alvo}')]")
+                    driver.execute_script("arguments[0].click();", item_cli)
+            except Exception as e_c:
+                if log_container:
+                    log_container.warning(f"⚠️ Cliente mantido no valor padrão: {e_c}")
+
+        # SELEÇÃO DO COMBUSTÍVEL / EMPRESA (LOOKUP COM ROLAGEM)[cite: 18]
+        if combustivel_alvo and combustivel_alvo != "TODOS":
+            if log_container:
+                log_container.info(f"⛽ Selecionando Combustível/Empresa: '{combustivel_alvo}'...")
+            try:
+                # Clica no botão append do lookup (ícone com setas)[cite: 18]
+                btn_lookup = driver.find_elements(By.XPATH, "//div[contains(@class,'lookup')]//button[contains(@class,'input-group-append')]")
+                if btn_lookup:
+                    driver.execute_script("arguments[0].click();", btn_lookup[0])
+                    time.sleep(1.5)
+
+                    # Localiza a opção especificada na lista suspensa[cite: 18]
+                    opcao_combustivel = wait.until(EC.element_to_be_clickable((
+                        By.XPATH, f"//*[contains(text(),'{combustivel_alvo}')]"
+                    )))
+                    driver.execute_script("arguments[0].click();", opcao_combustivel)
+                    time.sleep(1)
+            except Exception as e_comb:
+                if log_container:
+                    log_container.warning(f"⚠️ Combustível mantido no valor padrão: {e_comb}")
 
         # 4. PREENCHIMENTO DO PERÍODO
         if log_container:
-            log_container.info("📅 Inserindo o período das datas...")
+            log_container.info("📅 Configurando o período das datas...")
 
         inputs_modal = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//input[@type='text']")))
         
-        campo_dt_inicio = inputs_modal[-2] if len(inputs_modal) >= 2 else inputs_modal[0]
-        campo_dt_fim = inputs_modal[-1] if len(inputs_modal) >= 2 else inputs_modal[0]
+        campo_dt_inicio = None
+        campo_dt_fim = None
+
+        for inp in inputs_modal:
+            val = inp.get_attribute("value") or ""
+            if "/" in val or "01" in val:
+                if not campo_dt_inicio:
+                    campo_dt_inicio = inp
+                else:
+                    campo_dt_fim = inp
+
+        if not campo_dt_inicio or not campo_dt_fim:
+            campo_dt_inicio = inputs_modal[-2] if len(inputs_modal) >= 2 else inputs_modal[0]
+            campo_dt_fim = inputs_modal[-1] if len(inputs_modal) >= 2 else inputs_modal[0]
 
         preencher_campo_js(driver, campo_dt_inicio, data_inicio)
         preencher_campo_js(driver, campo_dt_fim, data_fim)
         time.sleep(1)
 
-        # 5. SOLICITAR RELATÓRIO PDF
+        # 5. GERAR RELATÓRIO PDF (BOTÃO VISUALIZAR COM ÍCONE DE IMPRESSORA)[cite: 18]
         if log_container:
-            log_container.info("🖨️ Disparando download em PDF...")
+            log_container.info("🖨️ Disparando a geração do PDF...")
 
-        try:
-            btn_visualizar = driver.find_element(By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(@bs-title,'Visualizar')] | //button[contains(.,'Visualizar')]")
-            driver.execute_script("arguments[0].click();", btn_visualizar)
-        except Exception:
-            btn_visualizar = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'Visualizar')] | //span[contains(text(),'Visualizar')]")))
-            driver.execute_script("arguments[0].click();", btn_visualizar)
+        janelas_antes = driver.window_handles
+
+        btn_visualizar = wait.until(EC.element_to_be_clickable((
+            By.XPATH, "//*[@id='Img_Visualizar'] | //button[contains(.,'Visualizar')] | //button[contains(@class,'btn') and .//span[contains(text(),'Visualizar')]]"
+        )))
+        driver.execute_script("arguments[0].click();", btn_visualizar)
+        time.sleep(5)
+
+        # Trata popups de impressão recém-abertos[cite: 18]
+        janelas_depois = driver.window_handles
+        if len(janelas_depois) > len(janelas_antes):
+            driver.switch_to.window(janelas_depois[-1])
+            time.sleep(2)
 
         if log_container:
-            log_container.info("📥 Aguardando conclusão do download...")
+            log_container.info("📥 Concluindo o download do arquivo PDF...")
 
-        # 6. AGUARDAR O ARQUIVO SALVAR NA PASTA TEMPORÁRIA
+        # 6. VERIFICA O ARQUIVO BAIXADO
         caminho_pdf_baixado = None
-        for _ in range(30):
+        for _ in range(35):
             time.sleep(1)
             arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
             if arquivos:
@@ -846,15 +882,10 @@ if verificar_senha():
         else:
             st.info("Informe os dados do Liveposto para download automático.")
             empresa_liveposto = st.text_input("Empresa Portal", value="L1904")
-            cliente_liveposto = st.selectbox(
-                "Cliente / Empresa no Liveposto",
-                [
-                    "VERDES MARES DISTRIBUIDORA LTDA",
-                    "RT LOGISTICA E TRANSPORTES LTDA",
-                    "RT LOGISTICA E TRANSPORTES RN LTDA",
-                    "ETIVA DISTRIBUIDORA LTDA"
-                ]
-            )
+            
+            cliente_liveposto = st.text_input("Cliente / Empresa", value="OBJETIVA DISTRIBUIDORA LTDA")
+            combustivel_liveposto = st.text_input("Combustível / Empresa (Filtro)", value="ETANOL - Empresa: POSTO GURI", help="Deixe em branco ou digite TODOS para pegar o padrão.")
+            
             c_user, c_pass = st.columns(2)
             user_liveposto = c_user.text_input("Usuário Liveposto", value="RTLOG")
             pass_liveposto = c_pass.text_input("Senha Liveposto", type="password")
@@ -874,6 +905,7 @@ if verificar_senha():
                         caminho_pdf = baixar_pdf_liveposto(
                             empresa_liveposto,
                             cliente_liveposto,
+                            combustivel_liveposto,
                             user_liveposto, 
                             pass_liveposto, 
                             str_inicio, 
