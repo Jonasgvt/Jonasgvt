@@ -135,7 +135,7 @@ def fechar_alerta_se_existir(driver, log_container):
         alert = driver.switch_to.alert
         texto = alert.text
         alert.accept()
-        log_container.warning(f"⚠️ Alerta confirmado: {texto}")
+        log_container.warning(f"⚠️ Alerta confirmed: {texto}")
         time.sleep(0.8)
         return True
     except:
@@ -175,7 +175,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (ROBUSTA & JS ENFORCED)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (COM SELEÇÃO DE CLIENTE)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -185,7 +185,7 @@ def preencher_campo_js(driver, elemento, valor):
         arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
     """, elemento, valor)
 
-def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_container=None):
+def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, data_fim, log_container=None):
     download_dir = tempfile.mkdtemp()
 
     options = webdriver.ChromeOptions()
@@ -195,6 +195,7 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     prefs = {
         "download.default_directory": download_dir,
@@ -218,55 +219,67 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    driver.set_page_load_timeout(30)
-    wait = WebDriverWait(driver, 25)
+    driver.set_page_load_timeout(40)
+    wait = WebDriverWait(driver, 30)
 
     try:
         if log_container:
             log_container.info("🌐 Conectando ao portal Liveposto...")
 
         driver.get("https://posto.liveposto.com.br/")
-        time.sleep(4)  # Aguarda carregamento do JS da framework Webrun
-        
-        if log_container:
-            log_container.info("✍️ Preenchendo credenciais no Liveposto...")
+        time.sleep(5)
 
-        # 1. AUTENTICAÇÃO (Preenchimento misto Native + JS para máxima compatibilidade)
-        # Campo Empresa
-        campo_empresa = wait.until(EC.presence_of_element_located((
-            By.XPATH, "//input[contains(@id,'WFRInput') or @name='Empresa' or @id='Empresa'] | (//input[@type='text'])[1]"
-        )))
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        if iframes:
+            driver.switch_to.frame(iframes[0])
+
+        if log_container:
+            log_container.info("✍️ Preenchendo credenciais...")
+
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "input")))
+
+        inputs_texto = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
+        inputs_senha = driver.find_elements(By.XPATH, "//input[@type='password']")
+
+        if len(inputs_texto) >= 2:
+            campo_empresa = inputs_texto[0]
+            campo_user = inputs_texto[1]
+        elif len(inputs_texto) == 1:
+            campo_empresa = inputs_texto[0]
+            campo_user = inputs_texto[0]
+        else:
+            raise Exception("Nenhum campo de texto encontrado na página de login do Liveposto.")
+
+        campo_pass = inputs_senha[0] if inputs_senha else driver.find_element(By.XPATH, "(//input)[last()]")
+
         preencher_campo_js(driver, campo_empresa, empresa)
-        campo_empresa.send_keys(Keys.TAB)
-        time.sleep(0.5)
-
-        # Campo Usuário
-        inputs_texto = driver.find_elements(By.XPATH, "//input[@type='text']")
-        campo_user = inputs_texto[1] if len(inputs_texto) > 1 else inputs_texto[0]
         preencher_campo_js(driver, campo_user, usuario)
-        campo_user.send_keys(Keys.TAB)
-        time.sleep(0.5)
-
-        # Campo Senha
-        campo_pass = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='password']")))
         preencher_campo_js(driver, campo_pass, senha)
-        time.sleep(0.5)
 
-        # Submeter formulário de login
+        time.sleep(1)
+
         if log_container:
-            log_container.info("🔑 Submetendo login...")
+            log_container.info("🔑 Efetuando autenticação...")
 
-        try:
-            btn_entrar = driver.find_element(By.XPATH, "//*[@id='btnLogin']//button | //*[@id='btnLogin'] | //button[contains(.,'Entrar')]")
+        botoes = driver.find_elements(By.XPATH, "//button | //input[@type='submit' or @type='button']")
+        btn_entrar = None
+        for b in botoes:
+            txt = b.text or b.get_attribute("value") or ""
+            if "entrar" in txt.lower() or "acessar" in txt.lower() or b.get_attribute("id") == "btnLogin":
+                btn_entrar = b
+                break
+
+        if btn_entrar:
             driver.execute_script("arguments[0].click();", btn_entrar)
-        except Exception:
+        else:
             campo_pass.send_keys(Keys.ENTER)
 
-        time.sleep(5)
+        time.sleep(6)
+        driver.switch_to.default_content()
 
         # 2. NAVEGAÇÃO PARA O RELATÓRIO
         if log_container:
-            log_container.info("📂 Navegando para a emissão de relatórios...")
+            log_container.info("📂 Navegando para o relatório de vendas...")
 
         menu_relatorio = wait.until(EC.element_to_be_clickable((
             By.XPATH, "//*[contains(text(),'Vendas por Veículo')] | //*[@webrun-menu-action-type='form'] | //span[contains(text(),'Rel.')]"
@@ -274,44 +287,51 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
         driver.execute_script("arguments[0].click();", menu_relatorio)
         time.sleep(4)
 
-        # Troca para iframe caso o Webrun carregue a modal encapsulada
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
-        frames = driver.find_elements(By.TAG_NAME, "iframe")
-        if frames:
-            driver.switch_to.frame(frames[-1])
+        frames_modal = driver.find_elements(By.TAG_NAME, "iframe")
+        if frames_modal:
+            driver.switch_to.frame(frames_modal[-1])
 
-        # 3. PREENCHIMENTO DO PERÍODO
+        # 3. SELEÇÃO DA EMPRESA/CLIENTE NO MODAL
         if log_container:
-            log_container.info("📅 Configurando período de consulta...")
+            log_container.info(f"🏢 Selecionando o cliente: '{cliente_alvo}'...")
+
+        try:
+            # Clica no campo/botão de dropdown da empresa cliente
+            input_cliente = wait.until(EC.element_to_be_clickable((
+                By.XPATH, "//label[contains(text(),'Cliente')]/following::input[1] | //label[contains(text(),'Cliente')]/following::div[contains(@class,'lookup')][1]"
+            )))
+            input_cliente.click()
+            time.sleep(1)
+
+            # Busca e clica no item correspondente da lista suspensa
+            opcao_cliente = wait.until(EC.element_to_be_clickable((
+                By.XPATH, f"//li[contains(text(),'{cliente_alvo}')] | //div[contains(text(),'{cliente_alvo}')] | //*[contains(text(),'{cliente_alvo}')]"
+            )))
+            opcao_cliente.click()
+            time.sleep(1)
+        except Exception as e_cli:
+            if log_container:
+                log_container.warning(f"⚠️ Não foi possível alterar a seleção do Cliente (usando padrão): {e_cli}")
+
+        # 4. PREENCHIMENTO DO PERÍODO
+        if log_container:
+            log_container.info("📅 Inserindo o período das datas...")
 
         inputs_modal = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//input[@type='text']")))
         
-        # Encontra os campos de data no modal
-        campo_dt_inicio = None
-        campo_dt_fim = None
-        for inp in inputs_modal:
-            val = inp.get_attribute("value") or ""
-            placeholder = inp.get_attribute("placeholder") or ""
-            if "/" in val or "01" in val or "inicio" in inp.get_attribute("id").lower() or "inicial" in placeholder.lower():
-                if not campo_dt_inicio:
-                    campo_dt_inicio = inp
-                else:
-                    campo_dt_fim = inp
-
-        if not campo_dt_inicio or not campo_dt_fim:
-            # Fallback para os dois últimos inputs visíveis no modal
-            campo_dt_inicio = inputs_modal[-2]
-            campo_dt_fim = inputs_modal[-1]
+        campo_dt_inicio = inputs_modal[-2] if len(inputs_modal) >= 2 else inputs_modal[0]
+        campo_dt_fim = inputs_modal[-1] if len(inputs_modal) >= 2 else inputs_modal[0]
 
         preencher_campo_js(driver, campo_dt_inicio, data_inicio)
         preencher_campo_js(driver, campo_dt_fim, data_fim)
         time.sleep(1)
 
-        # 4. SOLICITAR RELATÓRIO PDF
+        # 5. SOLICITAR RELATÓRIO PDF
         if log_container:
-            log_container.info("🖨️ Gerando relatório PDF...")
+            log_container.info("🖨️ Disparando download em PDF...")
 
         try:
             btn_visualizar = driver.find_element(By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(@bs-title,'Visualizar')] | //button[contains(.,'Visualizar')]")
@@ -323,7 +343,7 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
         if log_container:
             log_container.info("📥 Aguardando conclusão do download...")
 
-        # 5. AGUARDAR DOWNLOAD
+        # 6. AGUARDAR O ARQUIVO SALVAR NA PASTA TEMPORÁRIA
         caminho_pdf_baixado = None
         for _ in range(30):
             time.sleep(1)
@@ -819,7 +839,16 @@ if verificar_senha():
 
         else:
             st.info("Informe os dados do Liveposto para download automático.")
-            empresa_liveposto = st.text_input("Empresa", value="L1904")
+            empresa_liveposto = st.text_input("Empresa Portal", value="L1904")
+            cliente_liveposto = st.selectbox(
+                "Cliente / Empresa no Liveposto",
+                [
+                    "VERDES MARES DISTRIBUIDORA LTDA",
+                    "RT LOGISTICA E TRANSPORTES LTDA",
+                    "RT LOGISTICA E TRANSPORTES RN LTDA",
+                    "ETIVA DISTRIBUIDORA LTDA"
+                ]
+            )
             c_user, c_pass = st.columns(2)
             user_liveposto = c_user.text_input("Usuário Liveposto", value="RTLOG")
             pass_liveposto = c_pass.text_input("Senha Liveposto", type="password")
@@ -838,6 +867,7 @@ if verificar_senha():
                         
                         caminho_pdf = baixar_pdf_liveposto(
                             empresa_liveposto,
+                            cliente_liveposto,
                             user_liveposto, 
                             pass_liveposto, 
                             str_inicio, 
