@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER EXTRAÇÃO RIGOROSA DO LIVEPOSTO
+# PARSER RIGOROSO DE EXTRAÇÃO (PREÇO, LITROS, KM)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -263,7 +263,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            # 1. KM Atual (Fica no final da linha principal, ex: 163.179)
+            # Captura de KM Atual (ex: 163.179 ou 163179)
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
@@ -281,7 +281,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 if "Total da Placa:" in sub_line or (j > i + 1 and re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line)):
                     break
 
-                # 2. Linha do Produto (DIESEL) -> Extrai Valor Unitário (7,600) e Quantidade (156,100)
+                # Captura na Linha do Produto DIESEL
                 if "DIESEL" in sub_line.upper():
                     produto_nome = "DIESEL B S10 ADITIVADO"
                     
@@ -293,9 +293,9 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                     valor_total = "0,00"
 
                     if len(nums_validos) >= 2:
-                        # Posição 0: Valor Unitário do Litro (ex: 7,600)
+                        # 1º número com decimal na linha do DIESEL = Valor Unitário (ex: 7,600)
                         vlr_unit = nums_validos[0]
-                        # Posição 1: Quantidade em Litros (ex: 156,100)
+                        # 2º número com decimal na linha do DIESEL = Quantidade Litros (ex: 156,100)
                         quantidade = nums_validos[1]
                         if len(nums_validos) >= 3:
                             valor_total = nums_validos[2]
