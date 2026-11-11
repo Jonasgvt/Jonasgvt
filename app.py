@@ -331,14 +331,14 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             driver.switch_to.default_content()
             
             # Se os botões já estiverem na raiz
-            if driver.find_elements(By.XPATH, "//button[contains(.,'Visualizar')] | //*[@id='Img_Visualizar']"):
+            if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar']"):
                 return True
 
             for frame in driver.find_elements(By.TAG_NAME, "iframe"):
                 try:
                     driver.switch_to.default_content()
                     driver.switch_to.frame(frame)
-                    if driver.find_elements(By.XPATH, "//button[contains(.,'Visualizar')] | //*[@id='Img_Visualizar'] | //input[@type='text']"):
+                    if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar'] | //input[@type='text']"):
                         return True
                 except Exception:
                     continue
@@ -384,11 +384,10 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 if log_container:
                     log_container.warning(f"⚠️ Mantido combustível pré-selecionado ({e_comb})")
 
-        # 5. PREENCHIMENTO SEGURO DAS DATAS (PREVINE INDEXERROR)
+        # 5. PREENCHIMENTO DAS DATAS
         if log_container:
             log_container.info("📅 Inserindo o período das datas...")
 
-        # Tenta reencontrar o frame correto se a busca inicial por inputs vier vazia
         inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
         if not inputs_modal:
             alternar_para_frame_do_modal()
@@ -398,7 +397,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         campo_dt_fim = None
 
         if len(inputs_modal) >= 2:
-            # Varre inputs para capturar o padrão de data
             for inp in inputs_modal:
                 val = inp.get_attribute("value") or ""
                 if "/" in val or "01" in val:
@@ -414,7 +412,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             campo_dt_inicio = inputs_modal[0]
             campo_dt_fim = inputs_modal[0]
         else:
-            # Fallback JavaScript direto no DOM para ignorar falta de elementos via Selenium pura
             driver.execute_script("""
                 var inputs = document.querySelectorAll("input");
                 var dt_inputs = [];
@@ -436,17 +433,47 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             
         time.sleep(1)
 
-        # 6. IMPRESSÃO E GERAMENTO DO PDF
+        # 6. DISPARO GARANTIDO DO BOTÃO VISUALIZAR
         if log_container:
             log_container.info("🖨️ Disparando a geração do arquivo PDF...")
 
         janelas_antes = driver.window_handles
 
-        try:
-            btn_visualizar = driver.find_element(By.XPATH, "//*[@id='Img_Visualizar'] | //button[contains(.,'Visualizar')]")
-            driver.execute_script("arguments[0].click();", btn_visualizar)
-        except Exception:
-            btn_visualizar = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'Visualizar')]")))
+        # Varredura completa para acionar o botão de impressão no frame ativo
+        def clicar_visualizar():
+            script_clique = """
+                var btn = document.querySelector("#Img_Visualizar") ||
+                          document.querySelector("button[id*='Visualizar']") ||
+                          Array.from(document.querySelectorAll("button, a, div")).find(el => el.textContent.includes("Visualizar"));
+                if (btn) {
+                    btn.click();
+                    return true;
+                }
+                return false;
+            """
+            
+            # Tenta no frame atual
+            if driver.execute_script(script_clique):
+                return True
+
+            # Tenta em todos os frames caso o contexto tenha sido perdido
+            frames = driver.find_elements(By.TAG_NAME, "iframe")
+            for f in frames:
+                try:
+                    driver.switch_to.default_content()
+                    driver.switch_to.frame(f)
+                    if driver.execute_script(script_clique):
+                        return True
+                except Exception:
+                    continue
+
+            return False
+
+        if not clicar_visualizar():
+            alternar_para_frame_do_modal()
+            btn_visualizar = wait.until(EC.element_to_be_clickable((
+                By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(text(),'Visualizar')] | //button[contains(.,'Visualizar')]"
+            )))
             driver.execute_script("arguments[0].click();", btn_visualizar)
 
         time.sleep(5)
