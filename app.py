@@ -21,118 +21,66 @@ from selenium.common.exceptions import (
 )
 
 # ---------------------------------------------------------
-# CONFIGURAÇÃO DE PÁGINA E DESIGN SYSTEM (LIMPO E MODERNO)
+# CONFIGURAÇÃO DE PÁGINA E ESTILO LIMPO (MODO CLARO INTEGRADO)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Gestão de Abastecimentos ZUQ",
     page_icon="⛽",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# CSS Unificado e Limpo (Zero contraste estranho)
+# CSS Totalmente Claro sem Conflito de Cores
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
-
-    /* Limpeza de fundo */
-    .stApp {
-        background-color: #F8FAFC;
-    }
-
-    #MainMenu, footer, header {visibility: hidden;}
-
-    /* Título do App */
-    .app-title {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #0F172A;
-        margin-bottom: 0.2rem;
+    /* Forçar tema claro universal */
+    :root {
+        --background-color: #FFFFFF;
+        --secondary-background-color: #F8FAFC;
+        --text-color: #0F172A;
     }
     
-    .app-subtitle {
-        font-size: 0.9rem;
-        color: #64748B;
-        margin-bottom: 1.5rem;
+    .stApp {
+        background-color: #F8FAFC;
+        color: #0F172A;
     }
 
-    /* Cards Brancos Elegantes */
-    .card-box {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 1.2rem;
-        margin-bottom: 1rem;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-    }
+    #MainMenu, footer, header { visibility: hidden; }
 
-    .card-title {
-        font-size: 1rem;
-        font-weight: 600;
-        color: #1E293B;
-        margin-bottom: 0.8rem;
-    }
-
-    /* Métricas Re-estilizadas */
-    div[data-testid="stMetric"] {
-        background-color: #F1F5F9;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 0.8rem 1rem;
-    }
-
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.75rem !important;
-        font-weight: 600 !important;
-        color: #64748B !important;
-    }
-
-    div[data-testid="stMetricValue"] {
-        font-size: 1.5rem !important;
-        font-weight: 700 !important;
-        color: #0F172A !important;
-    }
-
-    /* Botão Principal */
+    /* Ajuste de Botões */
     .stButton > button {
-        background-color: #2563EB;
-        color: white;
-        font-weight: 600;
-        font-size: 1rem;
-        border: none;
-        border-radius: 8px;
-        height: 3rem;
-        transition: all 0.2s;
+        background-color: #2563EB !important;
+        color: #FFFFFF !important;
+        font-weight: 600 !important;
+        border: none !important;
+        border-radius: 6px !important;
+        height: 2.8rem !important;
     }
 
     .stButton > button:hover {
-        background-color: #1D4ED8;
-        color: white;
+        background-color: #1D4ED8 !important;
     }
 
-    /* Estilização da Sidebar */
-    section[data-testid="stSidebar"] {
-        background-color: #0F172A !important;
+    /* Cards Brancos */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    /* Container de métricas sem caixa escura */
+    div[data-testid="stMetric"] {
+        background-color: #FFFFFF !important;
+        border: 1px solid #E2E8F0 !important;
+        border-radius: 8px !important;
+        padding: 0.8rem 1rem !important;
     }
 
-    section[data-testid="stSidebar"] * {
-        color: #E2E8F0 !important;
+    div[data-testid="stMetricLabel"] {
+        color: #64748B !important;
+        font-weight: 600 !important;
     }
 
-    section[data-testid="stSidebar"] input {
-        background-color: #1E293B !important;
-        border: 1px solid #334155 !important;
-        color: #FFFFFF !important;
-    }
-
-    /* Ajuste para remover preto absoluto dos uploader/tables */
-    div[data-testid="stFileUploader"] {
-        background-color: #FFFFFF;
-        border-radius: 8px;
+    div[data-testid="stMetricValue"] {
+        color: #0F172A !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -149,13 +97,13 @@ def verificar_senha():
     if st.session_state["autenticado"]:
         return True
 
-    st.markdown('<div class="app-title" style="text-align: center; margin-top: 4rem;">🔒 Acesso Restrito</div>', unsafe_allow_html=True)
-    st.markdown('<div class="app-subtitle" style="text-align: center;">Insira a senha de acesso para utilizar a automação ZUQ.</div>', unsafe_allow_html=True)
+    st.title("🔒 Gestão de Abastecimentos ZUQ")
+    st.write("Introduza a senha de acesso para continuar.")
 
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         with st.form("form_login"):
-            senha_digitada = st.text_input("Senha do Painel", type="password")
+            senha_digitada = st.text_input("Senha", type="password")
             btn_login = st.form_submit_button("🔑 Entrar", use_container_width=True)
 
             if btn_login:
@@ -168,7 +116,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER DE LEITURA (TXT / PDF)
+# LEITURA DE ARQUIVOS (TXT / PDF)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -281,7 +229,7 @@ def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
         driver.get(url)
     except TimeoutException:
         if log_container:
-            log_container.warning(f"⏳ Interrompendo carregamentos secundários...")
+            log_container.warning(f"⏳ Interrompendo carregamentos...")
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
@@ -299,14 +247,14 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
         except excecoes_capturadas as e:
             tempo_espera = intervalo_base * (2 ** (tentativa - 1))
             if log_container:
-                log_container.warning(f"⚠️ Instabilidade detectada (Tentativa {tentativa}/{max_tentativas}). Retentando...")
+                log_container.warning(f"⚠️ Instabilidade. Tentativa {tentativa}/{max_tentativas}...")
             
             if tentativa == max_tentativas:
                 raise e
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# CHECAGEM DE DUPLICATAS ROBUSTA (ZUQ)
+# CHECAGEM DE DUPLICATAS
 # ---------------------------------------------------------
 def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litros, preco, ultima_placa_filtrada, log_container):
     try:
@@ -371,7 +319,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
 
                 fechar_alerta_se_existir(driver, log_container)
 
-            except Exception as e_modal:
+            except Exception:
                 try:
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
                 except:
@@ -432,25 +380,25 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 time.sleep(1.2)
 
                 fechar_alerta_se_existir(driver, log_container)
-                log_container.info("✅ Registro excedente removido.")
+                log_container.info("✅ Registro removido.")
                 time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
                 log_container.error(f"❌ Erro ao remover duplicado: {e_rem}")
 
         elif len(linhas_duplicadas) == 1:
-            log_container.info(f"🔍 Registro em {data} ({litros}L) já existente. Pulando...")
+            log_container.info(f"🔍 Registro {data} ({litros}L) já existente. Pulando...")
             return True, True, placa
 
-    except Exception as e:
+    except Exception:
         fechar_alerta_se_existir(driver, log_container)
 
     return True, False, placa
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE LANÇAMENTO ZUQ
+# AUTOMAÇÃO DE LANÇAMENTO
 # ---------------------------------------------------------
-def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_container, progress_bar, metric_lancados, metric_ignorados):
+def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
     df_relatorio['status_lancamento'] = 'Pendente'
     df_relatorio['data_processamento'] = ''
@@ -462,12 +410,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-features=VizDisplayCompositor")
-    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--window-size=1920,1080")
-    
-    prefs = {"profile.managed_default_content_settings.images": 2}
-    options.add_experimental_option("prefs", prefs)
 
     if os.path.exists("/usr/bin/chromium"):
         options.binary_location = "/usr/bin/chromium"
@@ -484,7 +427,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
         driver = webdriver.Chrome(options=options)
 
     driver.set_page_load_timeout(15)
-    driver.set_script_timeout(10)
     wait = WebDriverWait(driver, 15)
 
     df = df.sort_values(by="placa").reset_index(drop=True)
@@ -494,7 +436,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     total_registros = len(df)
 
     try:
-        log_container.info("🌐 Conectando ao sistema ZUQ...")
+        log_container.info("🌐 Conectando ao ZUQ...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -517,7 +459,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 campo_senha.send_keys(Keys.ENTER)
 
         executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        log_container.info("🔐 Autenticado no portal!")
+        log_container.info("🔐 Autenticado com sucesso!")
         time.sleep(3)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
@@ -541,7 +483,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                     log_container=log_container
                 )
             except Exception as e_dup:
-                log_container.error(f"❌ Erro ao validar {row['placa']}: {e_dup}")
+                log_container.error(f"❌ Erro na placa {row['placa']}: {e_dup}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
@@ -556,7 +498,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada no ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada'
                 continue
 
             if ja_cadastrado:
@@ -576,7 +518,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
             try:
                 executar_com_retry(abrir_formulario, max_tentativas=3, log_container=log_container)
             except Exception as e_nav:
-                log_container.error(f"❌ Falha ao carregar formulário para {row['placa']}: {e_nav}")
+                log_container.error(f"❌ Falha no formulário: {e_nav}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
@@ -607,22 +549,22 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
             try:
                 veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
                 if not veiculo_encontrado:
-                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado nas opções.")
+                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado.")
                     qtd_ignorados += 1
                     metric_ignorados.metric("Ignorados", qtd_ignorados)
                     
                     df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
                     df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                    df_relatorio.at[idx, 'observacao'] = 'Veículo não localizado nas opções'
+                    df_relatorio.at[idx, 'observacao'] = 'Veículo não localizado'
                     continue
             except Exception as e_v:
-                log_container.error(f"Erro na seleção do veículo {row['placa']}: {e_v}")
+                log_container.error(f"Erro no veículo {row['placa']}: {e_v}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = f"Erro ao selecionar veículo: {str(e_v)}"
+                df_relatorio.at[idx, 'observacao'] = f"Erro no veículo: {str(e_v)}"
                 continue
 
             try:
@@ -686,7 +628,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 
                         erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
                         if erros_km and erros_km[0].is_displayed():
-                            log_container.warning("⚠️ Conflito no Odômetro! Limpando campo...")
+                            log_container.warning("⚠️ Conflito no Odômetro! Limpando...")
                             campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                             driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
                             time.sleep(0.5)
@@ -704,8 +646,8 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 if salvo:
                     ultima_placa_filtrada = ""
             except Exception as e_save:
-                log_container.error(f"❌ Erro ao salvar registro de {row['placa']}: {e_save}")
-                df_relatorio.at[idx, 'observacao'] = f"Erro no salvamento: {str(e_save)}"
+                log_container.error(f"❌ Erro ao salvar {row['placa']}: {e_save}")
+                df_relatorio.at[idx, 'observacao'] = f"Erro ao salvar: {str(e_save)}"
 
             time.sleep(1.0)
             fechar_alerta_se_existir(driver, log_container)
@@ -716,7 +658,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Sucesso'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso no ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso'
             else:
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
@@ -724,9 +666,9 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
                 if not df_relatorio.at[idx, 'observacao']:
-                    df_relatorio.at[idx, 'observacao'] = 'Falha no salvamento do formulário'
+                    df_relatorio.at[idx, 'observacao'] = 'Falha ao salvar'
 
-        log_container.success("🎉 Todos os lançamentos foram concluídos!")
+        log_container.success("🎉 Concluído!")
 
     except Exception as e:
         log_container.error(f"❌ Erro crítico: {e}")
@@ -736,80 +678,79 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     return df_relatorio
 
 # ---------------------------------------------------------
-# INTERFACE PRINCIPAL
+# INTERFACE PRINCIPAL (TABS E LAYOUT LIMPO)
 # ---------------------------------------------------------
 if verificar_senha():
-    # Cabeçalho Limpo
-    st.markdown('<div class="app-title">Central de Abastecimentos ZUQ</div>', unsafe_allow_html=True)
-    st.markdown('<div class="app-subtitle">Sincronização rápida de arquivos de abastecimento do Liveposto para o sistema ZUQ.</div>', unsafe_allow_html=True)
+    # Cabeçalho Principal
+    st.title("⛽ Central de Abastecimentos ZUQ")
+    
+    # Painel de Configurações Retrátil (Expander Superior)
+    with st.expander("⚙️ Configurações da Conta ZUQ", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        usuario_zuq = c1.text_input("Usuário ZUQ", value="manutencaoverdesmares")
+        senha_zuq = c2.text_input("Senha ZUQ", type="password")
+        url_zuq = c3.text_input("URL ZUQ", value="https://app.zuq.com.br")
+        fornecedor_zuq = c4.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
 
-    # Sidebar Lateral
-    with st.sidebar:
-        st.markdown("### ⚙️ Credenciais ZUQ")
-        usuario_zuq = st.text_input("Usuário ZUQ", value="manutencaoverdesmares")
-        senha_zuq = st.text_input("Senha ZUQ", type="password")
-        url_zuq = st.text_input("URL ZUQ", value="https://app.zuq.com.br")
-        fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
-        
-        st.divider()
-        modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False)
+    st.write("")
 
-        st.divider()
-        if st.button("🚪 Sair", use_container_width=True):
-            st.session_state["autenticado"] = False
-            st.rerun()
+    # Organização em Abas
+    tab1, tab2 = st.tabs(["📁 1. Arquivo e Prévia", "🚀 2. Execução do Lançamento"])
 
-    # Layout em 2 Colunas Organizadas
-    col_left, col_right = st.columns([1, 1.1], gap="medium")
+    dados_df = None
 
-    with col_left:
-        st.markdown('<div class="card-title">1. Importar Arquivo (PDF ou TXT)</div>', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader("Selecione o relatório baixado do Liveposto", type=["pdf", "txt"], label_visibility="collapsed")
-        
-        dados_df = None
+    with tab1:
+        st.subheader("Carregar Ficheiro de Abastecimentos")
+        uploaded_file = st.file_uploader("Selecione o arquivo baixado do Liveposto (PDF ou TXT)", type=["pdf", "txt"])
+
         if uploaded_file:
             dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            st.success(f"✅ **{len(dados_df)}** abastecimentos identificados no arquivo.")
+            st.session_state["dados_carregados"] = dados_df
+            st.success(f"**{len(dados_df)}** abastecimentos identificados no ficheiro.")
 
-            st.markdown('<div class="card-title" style="margin-top: 1.5rem;">Prévia dos Dados</div>', unsafe_allow_html=True)
+            st.write("---")
+            st.subheader("Prévia das Linhas Identificadas")
             st.dataframe(
                 dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], 
                 use_container_width=True,
-                height=320
+                height=350
             )
 
-    with col_right:
-        st.markdown('<div class="card-title">2. Painel de Execução</div>', unsafe_allow_html=True)
-        
+    if "dados_carregados" in st.session_state and dados_df is None:
+        dados_df = st.session_state["dados_carregados"]
+
+    with tab2:
+        st.subheader("Painel de Controle do Robô")
+
         m1, m2, m3 = st.columns(3)
-        metric_total = m1.metric("Total de Registros", len(dados_df) if dados_df is not None else 0)
+        metric_total = m1.metric("Total Identificado", len(dados_df) if dados_df is not None else 0)
         metric_lancados = m2.metric("Sucesso", 0)
         metric_ignorados = m3.metric("Ignorados", 0)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        btn_iniciar = st.button("🚀 Iniciar Lançamentos no ZUQ", use_container_width=True)
-        
-        progress_bar = st.progress(0, text="Aguardando início...")
-        log_container = st.container(height=280, border=True)
+        st.write("")
+        btn_iniciar = st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True)
+        st.write("")
+
+        progress_bar = st.progress(0, text="Aguardando comando...")
+        log_container = st.container(height=300, border=True)
 
         if btn_iniciar:
             if dados_df is None or dados_df.empty:
-                st.error("Faça o upload de um arquivo PDF/TXT primeiro.")
+                st.error("Por favor, carregue um arquivo PDF ou TXT na primeira aba antes de iniciar.")
             elif not senha_zuq:
-                st.error("Informe a senha do ZUQ na barra lateral.")
+                st.error("Preencha a senha do ZUQ nas configurações acima.")
             else:
                 df_resultado = lancar_no_zuq(
                     dados_df, url_zuq, usuario_zuq, senha_zuq, 
-                    fornecedor_zuq, modo_visivel, log_container, 
+                    fornecedor_zuq, log_container, 
                     progress_bar, metric_lancados, metric_ignorados
                 )
 
                 if df_resultado is not None:
                     csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
 
-                    st.divider()
-                    st.markdown("### 📋 Relatório de Auditoria")
+                    st.write("---")
+                    st.subheader("📋 Relatório Final de Processamento")
                     st.dataframe(
                         df_resultado[['placa', 'data', 'quantidade', 'status_lancamento', 'observacao']], 
                         use_container_width=True
