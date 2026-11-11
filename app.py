@@ -2,6 +2,7 @@ import os
 import re
 import glob
 import time
+import base64
 import tempfile
 import traceback
 from datetime import datetime
@@ -223,7 +224,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # Permite downloads irrestritos mesmo no modo Headless do Chrome
+    # Força salvamento automático em Headless via DevTools Protocol
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -492,11 +493,10 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if log_container:
             log_container.info("⏳ Aguardando o Liveposto processar e abrir a nova janela do PDF...")
 
-        # 6. CAPTURA ATIVA DA NOVA JANELA COM O PDF
+        # 6. CAPTURA DA URL DO POP-UP DO PDF
         url_pdf_popup = None
         
-        # Loop de até 30 segundos aguardando o Webrun abrir a nova janela do relatório
-        for _ in range(30):
+        for _ in range(35):
             janelas_atuais = set(driver.window_handles)
             novas_janelas = janelas_atuais - janelas_antes
             
@@ -513,8 +513,40 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         caminho_pdf_baixado = None
 
-        # Estratégia A: Download via requisição HTTP autenticada
+        # ESTRATÉGIA A: EXECUTAR FETCH BINÁRIO DIRETAMENTE NO CONTEXTO DO NAVEGADOR (Bypassa visualizador PDF)
         if url_pdf_popup:
+            try:
+                js_fetch_pdf = """
+                    var pdfUrl = arguments[0];
+                    var callback = arguments[1];
+                    fetch(pdfUrl, { credentials: 'include' })
+                        .then(response => response.arrayBuffer())
+                        .then(buffer => {
+                            var binary = '';
+                            var bytes = new Uint8Array(buffer);
+                            var len = bytes.byteLength;
+                            for (var i = 0; i < len; i++) {
+                                binary += String.fromCharCode(bytes[i]);
+                            }
+                            callback(window.btoa(binary));
+                        })
+                        .catch(err => callback(null));
+                """
+                driver.set_script_timeout(30)
+                pdf_b64 = driver.execute_async_script(js_fetch_pdf, url_pdf_popup)
+                
+                if pdf_b64:
+                    pdf_bytes = base64.b64decode(pdf_b64)
+                    caminho_dest = os.path.join(download_dir, "relatorio_liveposto.pdf")
+                    with open(caminho_dest, "wb") as f:
+                        f.write(pdf_bytes)
+                    caminho_pdf_baixado = caminho_dest
+            except Exception as e_b64:
+                if log_container:
+                    log_container.warning(f"⚠️ Erro ao extrair PDF via JS fetch: {e_b64}")
+
+        # ESTRATÉGIA B: REQUISIÇÃO REQUESTS COM REFERER EXATO DO POPUP
+        if not caminho_pdf_baixado and url_pdf_popup:
             try:
                 sessao = requests.Session()
                 for cookie in driver.get_cookies():
@@ -523,7 +555,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 headers = {
                     "User-Agent": driver.execute_script("return navigator.userAgent;"),
                     "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": driver.current_url
+                    "Referer": "https://posto.liveposto.com.br/"
                 }
                 
                 resposta = sessao.get(url_pdf_popup, headers=headers, timeout=40)
@@ -536,9 +568,9 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 if log_container:
                     log_container.warning(f"⚠️ Erro na requisição direta HTTP: {e_http}")
 
-        # Estratégia B: Varredura de download pelo Chromium CDP no disco
+        # ESTRATÉGIA C: VARREDURA DE DOWNLOADS GERADOS PELO NAVEGADOR
         if not caminho_pdf_baixado:
-            for _ in range(20):
+            for _ in range(15):
                 time.sleep(1)
                 arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
                 if arquivos:
