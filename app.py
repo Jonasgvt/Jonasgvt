@@ -135,7 +135,7 @@ def fechar_alerta_se_existir(driver, log_container):
         alert = driver.switch_to.alert
         texto = alert.text
         alert.accept()
-        log_container.warning(f"⚠️ Alerta confirmed: {texto}")
+        log_container.warning(f"⚠️ Alerta confirmado: {texto}")
         time.sleep(0.8)
         return True
     except:
@@ -175,7 +175,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (COM SELEÇÃO DE CLIENTE)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (AJUSTADA DE ACORDO COM ERRO DO MENU)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -248,7 +248,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
             campo_empresa = inputs_texto[0]
             campo_user = inputs_texto[0]
         else:
-            raise Exception("Nenhum campo de texto encontrado na página de login do Liveposto.")
+            raise Exception("Nenhum campo de texto encontrado na página de login.")
 
         campo_pass = inputs_senha[0] if inputs_senha else driver.find_element(By.XPATH, "(//input)[last()]")
 
@@ -275,18 +275,26 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
             campo_pass.send_keys(Keys.ENTER)
 
         time.sleep(6)
+
+        # RETORNA O FOCO PARA A PÁGINA RAIZ (GARANTE QUE O MENU LATERAL SEJA VISÍVEL)
         driver.switch_to.default_content()
 
-        # 2. NAVEGAÇÃO PARA O RELATÓRIO
+        # 2. SELEÇÃO DO MENU LATERAL (Usando IDs e XPATHs extraídos da tela)
         if log_container:
-            log_container.info("📂 Navegando para o relatório de vendas...")
+            log_container.info("📂 Navegando para o relatório de vendas por veículo...")
 
-        menu_relatorio = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[contains(text(),'Vendas por Veículo')] | //*[@webrun-menu-action-type='form'] | //span[contains(text(),'Rel.')]"
-        )))
+        xpath_menu = (
+            "//a[contains(@id,'MenuLateralGamma-item-50925')] | "
+            "//a[@webrun-menu-action-type='form' and contains(@style,'500000556')] | "
+            "//*[contains(text(),'Vendas por Veiculo') or contains(text(),'Vendas por Veículo')] | "
+            "//span[contains(@class,'menu-item-text') and contains(.,'Rel.')]"
+        )
+        
+        menu_relatorio = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_menu)))
         driver.execute_script("arguments[0].click();", menu_relatorio)
         time.sleep(4)
 
+        # Se o relatório abrir em iframe ou popup
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
@@ -294,19 +302,17 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
         if frames_modal:
             driver.switch_to.frame(frames_modal[-1])
 
-        # 3. SELEÇÃO DA EMPRESA/CLIENTE NO MODAL
+        # 3. SELEÇÃO DO CLIENTE / EMPRESA DENTRO DA MODAL
         if log_container:
             log_container.info(f"🏢 Selecionando o cliente: '{cliente_alvo}'...")
 
         try:
-            # Clica no campo/botão de dropdown da empresa cliente
             input_cliente = wait.until(EC.element_to_be_clickable((
                 By.XPATH, "//label[contains(text(),'Cliente')]/following::input[1] | //label[contains(text(),'Cliente')]/following::div[contains(@class,'lookup')][1]"
             )))
             input_cliente.click()
             time.sleep(1)
 
-            # Busca e clica no item correspondente da lista suspensa
             opcao_cliente = wait.until(EC.element_to_be_clickable((
                 By.XPATH, f"//li[contains(text(),'{cliente_alvo}')] | //div[contains(text(),'{cliente_alvo}')] | //*[contains(text(),'{cliente_alvo}')]"
             )))
@@ -314,7 +320,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, usuario, senha, data_inicio, dat
             time.sleep(1)
         except Exception as e_cli:
             if log_container:
-                log_container.warning(f"⚠️ Não foi possível alterar a seleção do Cliente (usando padrão): {e_cli}")
+                log_container.warning(f"⚠️ Usando cliente padrão da tela ({e_cli}).")
 
         # 4. PREENCHIMENTO DO PERÍODO
         if log_container:
