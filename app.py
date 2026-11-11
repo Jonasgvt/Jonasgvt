@@ -88,11 +88,9 @@ def limpa_numero(val_str):
         return 0.0
 
 def extrair_dados_txt_ou_pdf(caminho_ou_stream):
-    """Extrai os dados de abastecimento lendo arquivos TXT exportados do Liveposto ou PDFs."""
     registos = []
     lines = []
 
-    # 1. Leitura do conteúdo
     if isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
         if caminho_ou_stream.lower().endswith('.pdf'):
             reader = pypdf.PdfReader(caminho_ou_stream)
@@ -110,12 +108,10 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             caminho_ou_stream.seek(0)
             lines = [l.decode('latin1', errors='ignore') for l in caminho_ou_stream.readlines()]
 
-    # 2. Processamento por Expressão Regular
     i = 0
     while i < len(lines):
         line = lines[i].strip()
 
-        # Identifica linhas que começam com Data DD/MM/YY ou DD/MM/YYYY
         m_data = re.match(r'^(\d{2}/\d{2}/\d{2,4})\s*(\d{1,2}:\d{2}:\d{2})?(\d{3,6})?\s+(.*)', line)
         if m_data:
             dt_str, hr_raw, cupom_raw, resto_linha = m_data.groups()
@@ -257,7 +253,6 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # CDP para permitir downloads em Headless
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -317,7 +312,6 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(6)
 
-        # 2. SELEÇÃO DO MENU LATERAL
         if log_container:
             log_container.info("📂 Procurando o menu lateral e acionando o relatório...")
 
@@ -366,7 +360,6 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(5)
 
-        # 3. INTERAÇÃO NO MODAL WEBRUN
         def alternar_para_frame_do_modal():
             driver.switch_to.default_content()
             
@@ -385,7 +378,6 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         alternar_para_frame_do_modal()
 
-        # 4. SELEÇÃO DO TIPO DE EXPORTAÇÃO (TEXTO)
         if log_container:
             log_container.info("📄 Alterando o Tipo de Exportação para TEXTO...")
 
@@ -415,7 +407,6 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
             if log_container:
                 log_container.warning(f"⚠️ Aviso ao selecionar tipo de exportação: {e_exp}")
 
-        # 5. FILTROS E DATAS
         if cliente_alvo:
             try:
                 selects_cli = driver.find_elements(By.TAG_NAME, "select")
@@ -441,7 +432,6 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(1.5)
 
-        # 6. DISPARO DO BOTÃO VISUALIZAR
         if log_container:
             log_container.info("🖨️ Disparando a exportação direta do relatório...")
 
@@ -460,17 +450,17 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
         if log_container:
             log_container.info("⏳ Aguardando a gravação do arquivo no disco...")
 
-        # 7. AGUARDO DO ARQUIVO NA PASTA DE DOWNLOADS (Até 60s)
         caminho_arquivo_baixado = None
         for _ in range(60):
             time.sleep(1)
             arquivos = glob.glob(os.path.join(download_dir, "*"))
-            
-            # Filtra arquivos temporários de download do Chrome
             validos = [f for f in arquivos if not f.endswith('.crdownload') and not f.endswith('.tmp')]
             if validos:
                 caminho_arquivo_baixado = validos[0]
                 break
+
+        if not caminho_arquivo_baixado:
+            raise Exception("Timeout: Nenhum arquivo foi gravado no disco dentro do tempo limite de 60 segundos.")
 
         return caminho_arquivo_baixado
 
@@ -478,7 +468,8 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
         erro_detalhado = traceback.format_exc()
         if log_container:
             log_container.error(f"❌ Erro ao interagir com o Liveposto: {e}")
-            log_container.code(erro_detalhado)
+            log_container.markdown("### 🔍 Traceback Completo da Exceção:")
+            log_container.code(erro_detalhado, language="python")
         return None
     finally:
         driver.quit()
