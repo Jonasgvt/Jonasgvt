@@ -21,7 +21,7 @@ from selenium.common.exceptions import (
 )
 
 # ---------------------------------------------------------
-# CONFIGURAÇÃO DE PÁGINA E ESTILO APPLE GLASS (MINHAS PARCELAS)
+# CONFIGURAÇÃO DE PÁGINA E ESTILO APPLE GLASS
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="ZUQ Fleet - Apple Glass",
@@ -30,12 +30,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilização CSS inspirada no Minhas Parcelas (Apple Glass Dark PWA)
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-    /* Reset global de fonte e fundo Dark Neon */
     html, body, [class*="css"] {
         font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Plus Jakarta Sans', sans-serif !important;
     }
@@ -57,7 +55,6 @@ st.markdown("""
         max-width: 1200px !important;
     }
 
-    /* Topbar / Logo Glass Header */
     .glass-header {
         display: flex;
         align-items: center;
@@ -92,7 +89,6 @@ st.markdown("""
         border: 1px solid rgba(10, 132, 255, 0.3);
     }
 
-    /* Cards de Métricas Apple Glass */
     div[data-testid="stMetric"] {
         background: rgba(255, 255, 255, 0.06) !important;
         backdrop-filter: blur(28px) saturate(190%) !important;
@@ -118,7 +114,6 @@ st.markdown("""
         letter-spacing: -0.5px;
     }
 
-    /* Botão Vibrante Apple Blue */
     .stButton > button {
         background: #0A84FF !important;
         color: #FFFFFF !important;
@@ -136,7 +131,6 @@ st.markdown("""
         box-shadow: 0 12px 28px rgba(10, 132, 255, 0.5) !important;
     }
 
-    /* Inputs e Selects Translucidos */
     div[data-baseweb="input"] {
         background: rgba(255, 255, 255, 0.08) !important;
         backdrop-filter: blur(28px) !important;
@@ -149,7 +143,6 @@ st.markdown("""
         color: #FFFFFF !important;
     }
 
-    /* Expander Glass */
     details {
         background: rgba(255, 255, 255, 0.05) !important;
         backdrop-filter: blur(28px) !important;
@@ -164,7 +157,6 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
-    /* File Uploader Customizado */
     div[data-testid="stFileUploader"] {
         background: rgba(255, 255, 255, 0.05) !important;
         border: 1px dashed rgba(255, 255, 255, 0.2) !important;
@@ -211,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# FUNÇÕES DE LEITURA E EXTRAÇÃO (PDF / TXT)
+# PARSER ATUALIZADO E PRECISO PARA LIVEPOSTO (PDF / TXT)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -228,6 +220,7 @@ def limpa_numero(val_str):
         return 0.0
 
 def extrair_dados_txt_ou_pdf(caminho_ou_stream):
+    """Extrai com precisão os itens de DIESEL e ARLA identificados no relatório Liveposto."""
     registos = []
     lines = []
 
@@ -254,55 +247,59 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
     while i < len(lines):
         line = lines[i].strip()
 
-        m_data = re.match(r'^(\d{2}/\d{2}/\d{2,4})\s*(\d{1,2}:\d{2}:\d{2})?(\d{3,6})?\s+(.*)', line)
-        if m_data:
-            dt_str, hr_raw, cupom_raw, resto_linha = m_data.groups()
+        # Procura linhas de cabeçalho (contendo Hora, Data ou Cupom + Placa)
+        m_placa = re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', line)
+        m_data = re.search(r'(\d{2}/\d{2}/\d{2,4})', line)
+        
+        if m_placa and m_data:
+            placa = m_placa.group(1).replace('-', '')
+            dt_str = m_data.group(1)
             
             partes_dt = dt_str.split('/')
             if len(partes_dt[2]) == 2:
                 dt_str = f"{partes_dt[0]}/{partes_dt[1]}/20{partes_dt[2]}"
 
-            m_placa = re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', resto_linha)
-            placa = m_placa.group(1).replace('-', '') if m_placa else ""
+            m_cupom = re.search(r'^(\d{5,7})\b', line)
+            cupom = m_cupom.group(1) if m_cupom else "0"
 
-            nxt_line = lines[i+1].strip() if i+1 < len(lines) else ""
-            
-            numeros_nxt = re.findall(r'(\d+(?:[\.,]\d+)?)', nxt_line)
-            numeros_linha = re.findall(r'(\d+(?:[\.,]\d+)?)', resto_linha)
+            m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
+            hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            vlr_unit = "0,00"
-            quantidade = "0,00"
-            valor_total = "0,00"
-            km = ""
+            m_km = re.search(r'(\d{2,3}\.\d{3}|\d{5,6})', line)
+            km = m_km.group(1).replace('.', '') if m_km else ""
 
-            if numeros_nxt:
-                vlr_unit = numeros_nxt[0]
-                if len(numeros_nxt) >= 2:
-                    quantidade = numeros_nxt[1]
-                if len(numeros_nxt) >= 3:
-                    valor_total = numeros_nxt[-1]
+            # Analisa as linhas subsequentes até encontrar a próxima placa ou o Total da Placa
+            j = i + 1
+            while j < len(lines):
+                sub_line = lines[j].strip()
+                if "Total da Placa:" in sub_line or re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line):
+                    break
+                
+                # Identifica produto DIESEL B S10
+                if "DIESEL" in sub_line.upper():
+                    produto_nome = "DIESEL B S10 ADITIVADO"
+                    # Lê a linha numérica seguinte com o valor unitário e a quantidade
+                    if j + 1 < len(lines):
+                        line_val = lines[j+1].strip()
+                        numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', line_val)
+                        if len(numeros) >= 2:
+                            vlr_unit = numeros[0]
+                            qtd = numeros[1]
+                            tot = numeros[2] if len(numeros) >= 3 else "0,00"
 
-            if quantidade == "0,00" and numeros_linha:
-                quantidade = numeros_linha[0]
-                if len(numeros_linha) >= 2:
-                    valor_total = numeros_linha[1]
+                            registos.append({
+                                'data': dt_str,
+                                'hora': hora,
+                                'cupom': cupom,
+                                'placa': placa,
+                                'produto': produto_nome,
+                                'quantidade': qtd,
+                                'valor_unitario': vlr_unit,
+                                'valor_total': tot,
+                                'km': km
+                            })
+                j += 1
 
-            m_km = re.search(r'(\d{2,3}\.\d{3}|\d{5,6})', resto_linha)
-            if m_km:
-                km = m_km.group(1).replace('.', '')
-
-            if placa:
-                registos.append({
-                    'data': dt_str,
-                    'hora': hr_raw if hr_raw else "08:00:00",
-                    'cupom': cupom_raw if cupom_raw else "0",
-                    'placa': placa,
-                    'produto': "DIESEL B S10 ADITIVADO",
-                    'quantidade': quantidade,
-                    'valor_unitario': vlr_unit,
-                    'valor_total': valor_total,
-                    'km': km
-                })
         i += 1
 
     return pd.DataFrame(registos)
@@ -565,7 +562,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             progress_bar.progress(progress, text=f"Lançando {idx+1} de {total_registros}")
             horario_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L")
+            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço: R$ {row['valor_unitario']}")
 
             fechar_alerta_se_existir(driver, log_container)
 
@@ -802,7 +799,7 @@ if verificar_senha():
         dados_df = None
         if uploaded_file:
             dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            st.success(f"✅ **{len(dados_df)}** abastecimentos identificados.")
+            st.success(f"✅ **{len(dados_df)}** abastecimentos de Diesel identificados com sucesso.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 👁️ Prévia dos Dados")
@@ -846,7 +843,7 @@ if verificar_senha():
                     st.divider()
                     st.markdown("### 📋 Relatório Consolidado")
                     st.dataframe(
-                        df_resultado[['placa', 'data', 'quantidade', 'status_lancamento', 'observacao']], 
+                        df_resultado[['placa', 'data', 'quantidade', 'valor_unitario', 'status_lancamento', 'observacao']], 
                         use_container_width=True
                     )
 
