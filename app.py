@@ -24,7 +24,7 @@ from selenium.common.exceptions import (
 # CONFIGURAÇÃO DE PÁGINA E ESTILO APPLE GLASS
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="ZUQ Fleet - Auditoria & Automação",
+    page_title="ZUQ Fleet - Auditoria & Edição",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -52,7 +52,7 @@ st.markdown("""
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 2.5rem !important;
-        max-width: 1250px !important;
+        max-width: 1280px !important;
     }
 
     .glass-header {
@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER CORRIGIDO (DIFERENCIA CUPOM DE KM)
+# PARSER DE ARQUIVO PDF/TXT
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -257,20 +257,17 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             if len(partes_dt[2]) == 2:
                 dt_str = f"{partes_dt[0]}/{partes_dt[1]}/20{partes_dt[2]}"
 
-            # O número de 6 dígitos no início da linha é SEMPRE o Cupom
             m_cupom = re.search(r'\b(\d{5,7})\b', line)
             cupom = m_cupom.group(1) if m_cupom else "0"
 
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            # O KM real no Liveposto vem no formato com ponto (ex: 21.940 ou 126.560) ou é o número de odômetro após o total
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
                 km = m_km_ponto.group(1).replace('.', '')
             else:
-                # Procura numéricos inteiros maiores que o cupom para isolar o KM
                 nums_linha = re.findall(r'\b(\d{5,6})\b', line)
                 nums_filtrados = [n for n in nums_linha if n != cupom]
                 if nums_filtrados:
@@ -333,13 +330,12 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
     return auditar_e_validar_dados(df)
 
 # ---------------------------------------------------------
-# MOTOR DE AUDITORIA & CHECAGEM DE DIVERGÊNCIAS
+# MOTOR DE AUDITORIA & VALIDAÇÃO
 # ---------------------------------------------------------
 def auditar_e_validar_dados(df):
     if df.empty:
         return df
 
-    df['divergencia'] = False
     df['alertas_auditoria'] = ''
 
     for idx, row in df.iterrows():
@@ -347,13 +343,13 @@ def auditar_e_validar_dados(df):
 
         km_val = limpa_numero(row['km'])
         if km_val == 0:
-            alertas.append("⚠️ Odômetro Zerado/Ausente")
+            alertas.append("⚠️ KM Ausente (Pode editar abaixo)")
         elif km_val < 1000:
             alertas.append(f"⚠️ KM atípico ({row['km']})")
 
         preco_val = limpa_numero(row['valor_unitario'])
         if preco_val == 0:
-            alertas.append("❌ Preço por litro zerado")
+            alertas.append("❌ Preço zerado")
         elif preco_val < 4.00 or preco_val > 9.50:
             alertas.append(f"⚠️ Preço atípico (R$ {row['valor_unitario']})")
 
@@ -361,11 +357,10 @@ def auditar_e_validar_dados(df):
         if litros_val == 0:
             alertas.append("❌ Litros zerados")
 
-        if not re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', row['placa']):
+        if not re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', str(row['placa']).strip()):
             alertas.append("⚠️ Placa suspeita")
 
         if alertas:
-            df.at[idx, 'divergencia'] = True
             df.at[idx, 'alertas_auditoria'] = " | ".join(alertas)
         else:
             df.at[idx, 'alertas_auditoria'] = "✅ OK"
@@ -493,7 +488,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
         target_preco = limpa_numero(preco)
         target_km = re.sub(r'\D', '', str(km)) if km else ""
         
-        partes_data = data.split('/')
+        partes_data = str(data).split('/')
         data_curta = f"{int(partes_data[0])}/{int(partes_data[1])}/{partes_data[2]}" if len(partes_data) == 3 else data
 
         linhas = driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]")
@@ -630,20 +625,23 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             progress_bar.progress(progress, text=f"Lançando {idx+1} de {total_registros}")
             horario_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço: R$ {row['valor_unitario']} | KM: {row['km']}")
+            placa_str = str(row['placa']).strip()
+            km_str = str(row['km']).strip() if pd.notna(row['km']) else ""
+
+            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {placa_str}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço: R$ {row['valor_unitario']} | KM: {km_str if km_str else 'N/A'}")
 
             fechar_alerta_se_existir(driver, log_container)
 
             try:
                 placa_existe, ja_cadastrado, ultima_placa_filtrada = executar_com_retry(
                     lambda: tratar_duplicados_se_existirem(
-                        driver, wait, base_url, row['placa'], row['data'], row['km'], row['quantidade'], row['valor_unitario'], ultima_placa_filtrada, log_container
+                        driver, wait, base_url, placa_str, str(row['data']), km_str, str(row['quantidade']), str(row['valor_unitario']), ultima_placa_filtrada, log_container
                     ),
                     max_tentativas=3,
                     log_container=log_container
                 )
             except Exception as e_dup:
-                log_container.error(f"❌ Erro ao validar {row['placa']}: {e_dup}")
+                log_container.error(f"❌ Erro ao validar {placa_str}: {e_dup}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
@@ -695,10 +693,10 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 input_veiculo = driver.find_element(By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]//input")
                 input_veiculo.send_keys(Keys.CONTROL + "a")
                 input_veiculo.send_keys(Keys.BACKSPACE)
-                digitar_devagar(input_veiculo, row['placa'], atraso=0.05)
+                digitar_devagar(input_veiculo, placa_str, atraso=0.05)
                 time.sleep(1.0)
                 
-                opcoes_form = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{row['placa']}')]")
+                opcoes_form = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{placa_str}')]")
                 if not opcoes_form:
                     return False
 
@@ -709,7 +707,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             try:
                 veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
                 if not veiculo_encontrado:
-                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado.")
+                    log_container.warning(f"⚠️ Veículo {placa_str} não localizado.")
                     qtd_ignorados += 1
                     metric_ignorados.metric("Ignorados", qtd_ignorados)
                     
@@ -718,7 +716,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     df_relatorio.at[idx, 'observacao'] = 'Veículo não localizado'
                     continue
             except Exception as e_v:
-                log_container.error(f"Erro no veículo {row['placa']}: {e_v}")
+                log_container.error(f"Erro no veículo {placa_str}: {e_v}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
@@ -728,7 +726,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 continue
 
             try:
-                data_iso = datetime.strptime(row['data'], "%d/%m/%Y").strftime("%Y-%m-%d")
+                data_iso = datetime.strptime(str(row['data']), "%d/%m/%Y").strftime("%Y-%m-%d")
                 campo_data = driver.find_element(By.ID, "fuelDate")
                 driver.execute_script("""
                     var elem = arguments[0]; elem.value = arguments[1];
@@ -742,23 +740,25 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 campo_hora.click()
                 campo_hora.send_keys(Keys.CONTROL + "a")
                 campo_hora.send_keys(Keys.BACKSPACE)
-                hora_formatada = row['hora'][:5] if len(row['hora']) >= 5 else row['hora']
+                hora_val = str(row['hora']) if 'hora' in row and pd.notna(row['hora']) else "08:00:00"
+                hora_formatada = hora_val[:5] if len(hora_val) >= 5 else hora_val
                 digitar_devagar(campo_hora, hora_formatada, atraso=0.05)
             except Exception: pass
 
             try:
                 campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, row['quantidade'])
+                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, str(row['quantidade']))
             except Exception: pass
 
             try:
                 campo_preco = driver.find_element(By.NAME, "price")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, row['valor_unitario'])
+                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, str(row['valor_unitario']))
             except Exception: pass
 
             try:
-                campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, row['km'])
+                if km_str and km_str != "0":
+                    campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
+                    driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, km_str)
             except Exception: pass
 
             try:
@@ -775,8 +775,9 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             except Exception: pass
 
             try:
+                cupom_val = str(row['cupom']) if 'cupom' in row and pd.notna(row['cupom']) else "0"
                 campo_doc = driver.find_element(By.XPATH, "//label[contains(text(),'Documento fiscal')]/following::input[1]")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_doc, row['cupom'])
+                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_doc, cupom_val)
             except Exception: pass
 
             def salvar_registro():
@@ -788,7 +789,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
                         erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
                         if erros_km and erros_km[0].is_displayed():
-                            log_container.warning(f"⚠️ Conflito de Odômetro ({row['km']} KM). Corrigindo automaticamente...")
+                            log_container.warning(f"⚠️ Conflito de Odômetro. Salvando sem KM...")
                             campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                             driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
                             time.sleep(0.5)
@@ -806,7 +807,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 if salvo:
                     ultima_placa_filtrada = ""
             except Exception as e_save:
-                log_container.error(f"❌ Erro ao salvar {row['placa']}: {e_save}")
+                log_container.error(f"❌ Erro ao salvar {placa_str}: {e_save}")
                 df_relatorio.at[idx, 'observacao'] = f"Erro ao salvar: {str(e_save)}"
 
             time.sleep(1.0)
@@ -843,7 +844,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 if verificar_senha():
     st.markdown("""
         <div class="glass-header">
-            <div class="glass-logo">⚡ ZUQ Fleet <span class="glass-badge">Auditoria & Auto</span></div>
+            <div class="glass-logo">⚡ ZUQ Fleet <span class="glass-badge">Auditoria & Edição</span></div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -856,55 +857,64 @@ if verificar_senha():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    col_upload, col_control = st.columns([1, 1.1], gap="large")
+    col_upload, col_control = st.columns([1.1, 1], gap="large")
 
     with col_upload:
-        st.markdown("### 📁 1. Ficheiro Liveposto")
+        st.markdown("### 📁 1. Ficheiro & Edição Prévia")
         uploaded_file = st.file_uploader("Upload de relatório em PDF ou TXT", type=["pdf", "txt"], label_visibility="collapsed")
 
-        dados_df = None
-        if uploaded_file:
-            dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            
-            qtd_div = len(dados_df[dados_df['divergencia'] == True])
-            if qtd_div > 0:
-                st.warning(f"⚠️ **{len(dados_df)}** registros lidos, sendo **{qtd_div}** com alertas de auditoria.")
-            else:
-                st.success(f"✅ **{len(dados_df)}** abastecimentos auditados e validados.")
+        if uploaded_file and "dados_df" not in st.session_state:
+            st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("### 👁️ Painel de Pré-Auditoria")
-            
-            st.dataframe(
-                dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria']], 
+        if "dados_df" in st.session_state and st.session_state["dados_df"] is not None:
+            st.info("💡 **Dica**: Pode clicar em qualquer célula abaixo (principalmente **KM**) para corrigir ou preencher antes de lançar no ZUQ.")
+
+            # Tabela Interativa Editável
+            df_editado = st.data_editor(
+                st.session_state["dados_df"],
+                column_order=['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria'],
+                column_config={
+                    "placa": st.column_config.TextColumn("Placa", required=True),
+                    "data": st.column_config.TextColumn("Data", required=True),
+                    "quantidade": st.column_config.TextColumn("Litros", required=True),
+                    "valor_unitario": st.column_config.TextColumn("Preço / L", required=True),
+                    "km": st.column_config.TextColumn("KM (Editar se vazio)", required=False),
+                    "alertas_auditoria": st.column_config.TextColumn("Status Auditoria", disabled=True),
+                },
                 use_container_width=True,
-                height=320
+                num_rows="dynamic",
+                height=350
             )
+
+            # Atualiza o dataframe auditado caso o utilizador tenha feito alterações
+            st.session_state["dados_final"] = auditar_e_validar_dados(df_editado)
 
     with col_control:
         st.markdown("### 📊 2. Lançamento Automático")
         
+        df_para_processar = st.session_state.get("dados_final", None)
+
         kpi1, kpi2, kpi3 = st.columns(3)
-        metric_total = kpi1.metric("Total Identificado", len(dados_df) if dados_df is not None else 0)
+        metric_total = kpi1.metric("Total de Registos", len(df_para_processar) if df_para_processar is not None else 0)
         metric_lancados = kpi2.metric("Sucesso", 0)
-        metric_ignorados = kpi3.metric("Ignorados / Divergentes", 0)
+        metric_ignorados = kpi3.metric("Ignorados / Erros", 0)
 
         st.markdown("<br>", unsafe_allow_html=True)
         
-        btn_iniciar = st.button("🚀 Validar no ZUQ e Lançar", use_container_width=True)
+        btn_iniciar = st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         progress_bar = st.progress(0, text="Aguardando disparo...")
         log_container = st.container(height=300, border=True)
 
         if btn_iniciar:
-            if dados_df is None or dados_df.empty:
+            if df_para_processar is None or df_para_processar.empty:
                 st.error("Faça o upload do ficheiro PDF/TXT antes de iniciar.")
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ nas configurações acima.")
             else:
                 df_resultado = lancar_no_zuq(
-                    dados_df, url_zuq, usuario_zuq, senha_zuq, 
+                    df_para_processar, url_zuq, usuario_zuq, senha_zuq, 
                     fornecedor_zuq, log_container, 
                     progress_bar, metric_lancados, metric_ignorados
                 )
@@ -913,7 +923,7 @@ if verificar_senha():
                     csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
 
                     st.divider()
-                    st.markdown("### 📋 Relatório Consolidado de Auditoria")
+                    st.markdown("### 📋 Relatório Consolidado")
                     st.dataframe(
                         df_resultado[['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'status_lancamento', 'observacao']], 
                         use_container_width=True
@@ -922,7 +932,7 @@ if verificar_senha():
                     st.download_button(
                         label="📥 Baixar Relatório Completo (CSV)",
                         data=csv_data,
-                        file_name=f"relatorio_auditoria_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"relatorio_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv",
                         use_container_width=True
                     )
