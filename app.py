@@ -4,6 +4,7 @@ import glob
 import time
 import tempfile
 import traceback
+import requests
 from datetime import datetime
 import pandas as pd
 import pypdf
@@ -235,7 +236,8 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "safebrowsing.enabled": True
+        "safebrowsing.enabled": True,
+        "profile.default_content_setting_values.automatic_downloads": 1
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -253,7 +255,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # CDP Habilitado de forma global para downloads em headless
+    # CDP Global para forçar o salvamento em disco
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -433,47 +435,60 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
         if log_container:
             log_container.info("🖨️ Disparando a exportação direta do relatório...")
 
-        # Disparo Duplo do Botão e Rotinas Nativas do Webrun
-        script_clique_completo = """
-            var disparou = false;
-            
-            // 1. Tenta acionar botão nativo do Webrun
-            if (typeof ebfFormPreview === 'function') {
-                ebfFormPreview();
-                disparou = true;
-            }
-            if (typeof ebfReportExport === 'function') {
-                ebfReportExport('TXT');
-                disparou = true;
-            }
-            
-            // 2. Dispara evento de clique diretamente no DOM
+        # Injeta monitoramento de requisições XHR / Fetch
+        driver.execute_script("""
+            window.__last_download_url = null;
+            var origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function() {
+                this.addEventListener('load', function() {
+                    if (this.responseURL && (this.responseURL.includes('ebf') || this.responseURL.includes('report') || this.responseURL.includes('download') || this.responseURL.includes('TXT'))) {
+                        window.__last_download_url = this.responseURL;
+                    }
+                });
+                origOpen.apply(this, arguments);
+            };
+        """)
+
+        # Clica no botão e aciona formulário
+        script_clique = """
             var btn = document.querySelector("#Img_Visualizar") || 
                       document.querySelector("[id*='Visualizar']") ||
-                      Array.from(document.querySelectorAll("button, a, div, img, span")).find(e => (e.textContent || e.title || e.alt || '').includes("Visualizar"));
-            
+                      Array.from(document.querySelectorAll("button, a, div, img")).find(e => (e.textContent || e.title || '').includes("Visualizar"));
             if (btn) {
-                var evt = document.createEvent("MouseEvents");
-                evt.initEvent("click", true, true);
-                btn.dispatchEvent(evt);
-                disparou = true;
+                btn.click();
             }
-
-            return disparou;
+            if (typeof ebfFormSubmit === 'function') {
+                ebfFormSubmit();
+            }
+            if (typeof ebfFormPreview === 'function') {
+                ebfFormPreview();
+            }
         """
-        driver.execute_script(script_clique_completo)
+        driver.execute_script(script_clique)
 
         if log_container:
             log_container.info("⏳ Aguardando a gravação do arquivo no disco...")
 
         caminho_arquivo_baixado = None
-        for _ in range(60):
+        for _ in range(35):
             time.sleep(1)
+            # 1. Checa se o browser gravou no disco
             arquivos = glob.glob(os.path.join(download_dir, "*"))
             validos = [f for f in arquivos if not f.endswith('.crdownload') and not f.endswith('.tmp')]
             if validos:
                 caminho_arquivo_baixado = validos[0]
                 break
+                
+            # 2. Checa se uma URL de resposta foi capturada para baixar via Requests
+            url_cap = driver.execute_script("return window.__last_download_url;")
+            if url_cap:
+                cookies = {c['name']: c['value'] for c in driver.get_cookies()}
+                res = requests.get(url_cap, cookies=cookies)
+                if res.status_code == 200:
+                    caminho_arquivo_baixado = os.path.join(download_dir, "relatorio_liveposto.txt")
+                    with open(caminho_arquivo_baixado, "wb") as f:
+                        f.write(res.content)
+                    break
 
         if not caminho_arquivo_baixado:
             raise Exception("Timeout: Nenhum arquivo foi gravado no disco dentro do tempo limite de 60 segundos.")
