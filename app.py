@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER AJUSTADO PARA CAPTURAR VLR. UNITÁRIO CORRETAMENTE
+# PARSER EXTRAÇÃO RIGOROSA DO LIVEPOSTO
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -263,7 +263,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            # Captura de KM Atual (ex: 163.179 ou 163179)
+            # 1. KM Atual (Fica no final da linha principal, ex: 163.179)
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
@@ -274,15 +274,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 if nums_filtrados:
                     km = nums_filtrados[0]
 
-            # Captura a Quantidade na linha principal (ex: 156,10)
-            nums_linha_principal = re.findall(r'(\d+(?:[\.,]\d+)?)', line)
-            qtd_principal = "0,00"
-            for n in nums_linha_principal:
-                v = limpa_numero(n)
-                if 10.0 <= v <= 900.0 and n != km and n != cupom:
-                    qtd_principal = n
-                    break
-
             j = i + 1
             while j < len(lines):
                 sub_line = lines[j].strip()
@@ -290,30 +281,26 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 if "Total da Placa:" in sub_line or (j > i + 1 and re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line)):
                     break
 
+                # 2. Linha do Produto (DIESEL) -> Extrai Valor Unitário (7,600) e Quantidade (156,100)
                 if "DIESEL" in sub_line.upper():
                     produto_nome = "DIESEL B S10 ADITIVADO"
                     
-                    busca_linha = sub_line
-                    if j + 1 < len(lines):
-                        busca_linha += " " + lines[j+1].strip()
+                    numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', sub_line)
+                    nums_validos = [n for n in numeros if ',' in n or '.' in n]
 
-                    numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', busca_linha)
-                    
                     vlr_unit = "7,600"
-                    quantidade = qtd_principal
+                    quantidade = "0,00"
                     valor_total = "0,00"
 
-                    if numeros:
-                        for num in numeros:
-                            val_float = limpa_numero(num)
-                            # Regra para Valor Unitário do Litro (geralmente entre R$ 4,50 e R$ 9,50)
-                            if 4.5 <= val_float <= 9.5 and vlr_unit == "7,600":
-                                vlr_unit = num
-                            # Regra para Quantidade em Litros detalhada caso não tenha pego na linha principal
-                            elif val_float > 10.0 and val_float < 900.0 and quantidade == "0,00":
-                                quantidade = num
-                            elif val_float >= 100.0 and valor_total == "0,00":
-                                valor_total = num
+                    if len(nums_validos) >= 2:
+                        # Posição 0: Valor Unitário do Litro (ex: 7,600)
+                        vlr_unit = nums_validos[0]
+                        # Posição 1: Quantidade em Litros (ex: 156,100)
+                        quantidade = nums_validos[1]
+                        if len(nums_validos) >= 3:
+                            valor_total = nums_validos[2]
+                    elif len(nums_validos) == 1:
+                        vlr_unit = nums_validos[0]
 
                     registos.append({
                         'data': dt_str,
@@ -345,7 +332,7 @@ def auditar_e_validar_dados(df):
 
         km_val = limpa_numero(row['km'])
         if km_val == 0:
-            alertas.append("⚠️ KM Ausente (Pode editar abaixo)")
+            alertas.append("⚠️ KM Ausente")
 
         preco_val = limpa_numero(row['valor_unitario'])
         if preco_val == 0:
@@ -509,7 +496,7 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         if linha_encontrada:
             texto_linha = linha_encontrada.text
-            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando se há divergência...")
+            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando divergências...")
 
             km_no_zuq = target_km in re.sub(r'\D', '', texto_linha) if target_km else True
 
