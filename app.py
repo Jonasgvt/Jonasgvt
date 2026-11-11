@@ -1,6 +1,9 @@
 import os
 import re
+import glob
 import time
+import tempfile
+import io
 from datetime import datetime
 import pandas as pd
 import pypdf
@@ -42,7 +45,6 @@ st.markdown("""
 # AUTENTICAÇÃO E SEGURANÇA DO PAINEL
 # ---------------------------------------------------------
 def verificar_senha():
-    """Retorna True se o utilizador introduzir a senha correta."""
     SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
 
     if "autenticado" not in st.session_state:
@@ -139,16 +141,13 @@ def fechar_alerta_se_existir(driver, log_container):
     except:
         return False
 
-# ---------------------------------------------------------
-# RESILIÊNCIA DE REDE (RETRY LOGIC & TIMEOUT SEGURO)
-# ---------------------------------------------------------
 def navegar_com_timeout_seguro(driver, url, timeout=12, log_container=None):
     driver.set_page_load_timeout(timeout)
     try:
         driver.get(url)
     except TimeoutException:
         if log_container:
-            log_container.warning(f"⏳ Tempo limite de {timeout}s atingido em {url}. Interrompendo carregamentos secundários...")
+            log_container.warning(f"⏳ Tempo limite de {timeout}s atingido em {url}. Interrompendo carregamentos...")
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
@@ -165,7 +164,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             return func()
         except excecoes_capturadas as e:
             tempo_espera = intervalo_base * (2 ** (tentativa - 1))
-            msg_erro = f"⚠️ Instabilidade de rede/timeout (Tentativa {tentativa}/{max_tentativas}). Aguardando {tempo_espera:.1f}s..."
+            msg_erro = f"⚠️ Instabilidade/timeout (Tentativa {tentativa}/{max_tentativas}). Aguardando {tempo_espera:.1f}s..."
             
             if log_container:
                 log_container.warning(msg_erro)
@@ -174,6 +173,166 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
                 raise e
             
             time.sleep(tempo_espera)
+
+# ---------------------------------------------------------
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO
+# ---------------------------------------------------------
+def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_container=None):
+    download_dir = tempfile.mkdtemp()
+
+    options = webdriver.ChromeOptions()
+    options.page_load_strategy = 'eager'
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-features=VizDisplayCompositor")
+    options.add_argument("--remote-debugging-port=9222")
+    options.add_argument("--window-size=1920,1080")
+
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "plugins.always_open_pdf_externally": True
+    }
+    options.add_experimental_option("prefs", prefs)
+
+    if os.path.exists("/usr/bin/chromium"):
+        options.binary_location = "/usr/bin/chromium"
+        service = Service("/usr/bin/chromedriver")
+    elif os.path.exists("/usr/bin/chromium-browser"):
+        options.binary_location = "/usr/bin/chromium-browser"
+        service = Service("/usr/bin/chromedriver")
+    else:
+        service = Service(ChromeDriverManager().install())
+
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception:
+        driver = webdriver.Chrome(options=options)
+
+    driver.set_page_load_timeout(20)
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        if log_container:
+            log_container.info("🌐 Conectando ao portal Liveposto...")
+
+        driver.get("https://posto.liveposto.com.br/")
+        
+        # 1. AUTENTICAÇÃO
+        try:
+            campo_empresa = wait.until(EC.element_to_be_clickable((By.ID, "WFRInput1045614")))
+        except Exception:
+            campo_empresa = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Empresa')]/following::input[1]")))
+        campo_empresa.click()
+        campo_empresa.send_keys(Keys.CONTROL + "a")
+        campo_empresa.send_keys(Keys.BACKSPACE)
+        digitar_devagar(campo_empresa, empresa, atraso=0.03)
+
+        try:
+            campo_user = driver.find_element(By.ID, "WFRInput1045611")
+        except NoSuchElementException:
+            campo_user = driver.find_element(By.XPATH, "//label[contains(text(),'Usuário')]/following::input[1]")
+        campo_user.click()
+        campo_user.send_keys(Keys.CONTROL + "a")
+        campo_user.send_keys(Keys.BACKSPACE)
+        digitar_devagar(campo_user, usuario, atraso=0.03)
+
+        try:
+            campo_pass = driver.find_element(By.ID, "WFRInput1045612")
+        except NoSuchElementException:
+            campo_pass = driver.find_element(By.XPATH, "//label[contains(text(),'Senha')]/following::input[1]")
+        campo_pass.click()
+        campo_pass.send_keys(Keys.CONTROL + "a")
+        campo_pass.send_keys(Keys.BACKSPACE)
+        digitar_devagar(campo_pass, senha, atraso=0.03)
+
+        try:
+            btn_entrar = driver.find_element(By.XPATH, "//*[@id='btnLogin']//button | //*[@id='btnLogin']")
+            btn_entrar.click()
+        except NoSuchElementException:
+            campo_pass.send_keys(Keys.ENTER)
+
+        time.sleep(4)
+        if log_container:
+            log_container.info("🔑 Autenticado! Acessando o relatório 'Vendas por Veículo'...")
+
+        # 2. SELEÇÃO DO MENU LATERAL
+        menu_relatorio = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//*[@webrun-menu-action-type='form' and contains(.,'500000556')] | //*[contains(text(),'Vendas por Veículo')] | //span[contains(text(),'Rel.')]")
+        ))
+        menu_relatorio.click()
+        time.sleep(3)
+
+        # Troca de iframe/janela se necessário
+        if len(driver.window_handles) > 1:
+            driver.switch_to.window(driver.window_handles[-1])
+
+        frames = driver.find_elements(By.TAG_NAME, "iframe")
+        if frames:
+            driver.switch_to.frame(frames[-1])
+
+        # 3. PREENCHIMENTO DAS DATAS (IDs Inspecionados WFRInput1080940 e WFRInput1080941)
+        if log_container:
+            log_container.info("📅 Preenchendo o período inicial e final...")
+
+        # Período Inicial
+        try:
+            campo_dt_inicio = wait.until(EC.presence_of_element_located((By.ID, "WFRInput1080940")))
+        except Exception:
+            campo_dt_inicio = wait.until(EC.presence_of_element_located((By.XPATH, "//label[contains(text(),'Período Inicial')]/following::input[1]")))
+        
+        campo_dt_inicio.click()
+        campo_dt_inicio.send_keys(Keys.CONTROL + "a")
+        campo_dt_inicio.send_keys(Keys.BACKSPACE)
+        digitar_devagar(campo_dt_inicio, data_inicio, atraso=0.04)
+
+        # Período Final
+        try:
+            campo_dt_fim = driver.find_element(By.ID, "WFRInput1080941")
+        except NoSuchElementException:
+            campo_dt_fim = driver.find_element(By.XPATH, "//label[contains(text(),'Período Final')]/following::input[1]")
+            
+        campo_dt_fim.click()
+        campo_dt_fim.send_keys(Keys.CONTROL + "a")
+        campo_dt_fim.send_keys(Keys.BACKSPACE)
+        digitar_devagar(campo_dt_fim, data_fim, atraso=0.04)
+
+        time.sleep(1)
+
+        # 4. CLIQUE NO BOTÃO VISUALIZAR (#Img_Visualizar)
+        if log_container:
+            log_container.info("🖨️ Solicitando a geração do PDF...")
+
+        try:
+            btn_visualizar = wait.until(EC.element_to_be_clickable((By.ID, "Img_Visualizar")))
+            btn_visualizar.click()
+        except Exception:
+            btn_visualizar = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@bs-title='Visualizar o Relatório'] | //button[contains(.,'Visualizar')]")))
+            btn_visualizar.click()
+
+        if log_container:
+            log_container.info("📥 Aguardando download do relatório PDF...")
+
+        # 5. RETORNO DO PDF BAIXADO
+        caminho_pdf_baixado = None
+        for _ in range(25):
+            time.sleep(1)
+            arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
+            if arquivos:
+                caminho_pdf_baixado = arquivos[0]
+                break
+
+        return caminho_pdf_baixado
+
+    except Exception as e:
+        if log_container:
+            log_container.error(f"❌ Erro ao interagir com a janela do Liveposto: {e}")
+        return None
+    finally:
+        driver.quit()
 
 # ---------------------------------------------------------
 # CHECAGEM DE DUPLICATAS ROBUSTA
@@ -320,7 +479,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
     return True, False, placa
 
 # ---------------------------------------------------------
-# PROCESSAMENTO PRINCIPAL DE LANÇAMENTO
+# PROCESSAMENTO PRINCIPAL DE LANÇAMENTO NO ZUQ
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
@@ -330,8 +489,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 
     options = webdriver.ChromeOptions()
     options.page_load_strategy = 'eager'
-    
-    # Argumentos essenciais para execuções Headless/Linux (Streamlit Cloud)
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -343,7 +500,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
 
-    # Inicialização do WebDriver adaptada ao Linux do Streamlit Cloud
     if os.path.exists("/usr/bin/chromium"):
         options.binary_location = "/usr/bin/chromium"
         service = Service("/usr/bin/chromedriver")
@@ -355,8 +511,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 
     try:
         driver = webdriver.Chrome(service=service, options=options)
-    except Exception as e_driver:
-        log_container.warning("⚠️ Tentando inicialização via Selenium Manager...")
+    except Exception:
         driver = webdriver.Chrome(options=options)
 
     driver.set_page_load_timeout(15)
@@ -409,7 +564,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 
             fechar_alerta_se_existir(driver, log_container)
 
-            # Verificar duplicados
             try:
                 placa_existe, ja_cadastrado, ultima_placa_filtrada = executar_com_retry(
                     lambda: tratar_duplicados_se_existirem(
@@ -446,7 +600,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 df_relatorio.at[idx, 'observacao'] = 'Registro já existente no sistema ZUQ'
                 continue
 
-            # Abrir Formulário de Novo Lançamento
             def abrir_formulario():
                 url_form = f"{base_url}/secure/manager/maintenance/#/fuel/new"
                 navegar_com_timeout_seguro(driver, url_form, timeout=10, log_container=log_container)
@@ -464,7 +617,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 df_relatorio.at[idx, 'observacao'] = f"Falha ao carregar formulário: {str(e_nav)}"
                 continue
 
-            # Selecionar Veículo
             def selecionar_veiculo():
                 elem_veiculo = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]")))
                 elem_veiculo.click()
@@ -487,7 +639,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
             try:
                 veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
                 if not veiculo_encontrado:
-                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado nas opções do formulário.")
+                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado nas opções.")
                     qtd_ignorados += 1
                     metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
                     
@@ -505,7 +657,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 df_relatorio.at[idx, 'observacao'] = f"Erro ao selecionar veículo: {str(e_v)}"
                 continue
 
-            # Data
             try:
                 data_iso = datetime.strptime(row['data'], "%d/%m/%Y").strftime("%Y-%m-%d")
                 campo_data = driver.find_element(By.ID, "fuelDate")
@@ -516,7 +667,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 """, campo_data, data_iso)
             except Exception: pass
 
-            # Hora
             try:
                 campo_hora = driver.find_element(By.ID, "additionTime")
                 campo_hora.click()
@@ -526,25 +676,21 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 digitar_devagar(campo_hora, hora_formatada, atraso=0.05)
             except Exception: pass
 
-            # Litros
             try:
                 campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, row['quantidade'])
             except Exception: pass
 
-            # Preço
             try:
                 campo_preco = driver.find_element(By.NAME, "price")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, row['valor_unitario'])
             except Exception: pass
 
-            # Odômetro
             try:
                 campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, row['km'])
             except Exception: pass
 
-            # Fornecedor
             try:
                 elem_fornecedor = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Fornecedor')]/following::div[contains(@class,'selectize-input')][1]")))
                 elem_fornecedor.click()
@@ -558,13 +704,11 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 time.sleep(0.3)
             except Exception: pass
 
-            # Documento fiscal
             try:
                 campo_doc = driver.find_element(By.XPATH, "//label[contains(text(),'Documento fiscal')]/following::input[1]")
                 driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_doc, row['cupom'])
             except Exception: pass
 
-            # Salvar
             def salvar_registro():
                 for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
                     try:
@@ -612,7 +756,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
                 if not df_relatorio.at[idx, 'observacao']:
-                    df_relatorio.at[idx, 'observacao'] = 'Falha no preenchimento/salvamento do formulário'
+                    df_relatorio.at[idx, 'observacao'] = 'Falha no salvamento do formulário'
 
         log_container.success("🎉 Todos os abastecimentos foram processados!")
 
@@ -624,16 +768,16 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     return df_relatorio
 
 # ---------------------------------------------------------
-# FLUXO PRINCIPAL DA APLICAÇÃO
+# FLUXO PRINCIPAL DA APLICAÇÃO STREAMLIT
 # ---------------------------------------------------------
 if verificar_senha():
     st.markdown('<div class="main-header">⛽ Central de Automação ZUQ</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Importe o relatório PDF de abastecimentos para sincronização automática com o sistema ZUQ.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Importe ou baixe o relatório de abastecimentos para sincronização automática com o sistema ZUQ.</div>', unsafe_allow_html=True)
 
     with st.sidebar:
         st.header("⚙️ Configurações do ZUQ")
-        usuario_zuq = st.text_input("Usuário", value="manutencaoverdesmares")
-        senha_zuq = st.text_input("Senha", type="password")
+        usuario_zuq = st.text_input("Usuário ZUQ", value="manutencaoverdesmares")
+        senha_zuq = st.text_input("Senha ZUQ", type="password")
         url_zuq = st.text_input("URL ZUQ", value="https://app.zuq.com.br")
         fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
         
@@ -645,35 +789,84 @@ if verificar_senha():
             st.session_state["autenticado"] = False
             st.rerun()
 
-    col_upload, col_dashboard = st.columns([1, 1.2])
+    col_upload, col_dashboard = st.columns([1.1, 1])
 
     with col_upload:
-        st.subheader("1. Ficheiro PDF")
-        uploaded_file = st.file_uploader("Selecione ou arraste o relatório de abastecimento", type=["pdf"])
+        st.subheader("1. Origem dos Dados")
+        
+        metodo_origem = st.radio(
+            "Selecione como deseja obter o relatório:",
+            ["📁 Upload Manual de PDF", "🌐 Baixar Direto do Liveposto"],
+            horizontal=True
+        )
 
-        if uploaded_file:
-            dados_df = extrair_dados_pdf(uploaded_file)
-            st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
+        dados_df = None
+
+        if metodo_origem == "📁 Upload Manual de PDF":
+            uploaded_file = st.file_uploader("Selecione o arquivo PDF de abastecimento", type=["pdf"])
+            if uploaded_file:
+                dados_df = extrair_dados_pdf(uploaded_file)
+                st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
+
+        else:
+            st.info("Informe os dados do Liveposto para download automático.")
+            empresa_liveposto = st.text_input("Empresa", value="L1904")
+            c_user, c_pass = st.columns(2)
+            user_liveposto = c_user.text_input("Usuário Liveposto", value="RTLOG")
+            pass_liveposto = c_pass.text_input("Senha Liveposto", type="password")
             
+            c_dt1, c_dt2 = st.columns(2)
+            dt_inicio = c_dt1.date_input("Data Inicial")
+            dt_fim = c_dt2.date_input("Data Final")
+
+            if st.button("📥 Baixar PDF do Liveposto", use_container_width=True):
+                if not pass_liveposto:
+                    st.error("Informe a senha do Liveposto.")
+                else:
+                    with st.spinner("Baixando relatório do Liveposto..."):
+                        str_inicio = dt_inicio.strftime("%d/%m/%Y")
+                        str_fim = dt_fim.strftime("%d/%m/%Y")
+                        
+                        caminho_pdf = baixar_pdf_liveposto(
+                            empresa_liveposto,
+                            user_liveposto, 
+                            pass_liveposto, 
+                            str_inicio, 
+                            str_fim, 
+                            log_container=st
+                        )
+
+                        if caminho_pdf and os.path.exists(caminho_pdf):
+                            with open(caminho_pdf, "rb") as f:
+                                dados_df = extrair_dados_pdf(f)
+                            st.session_state["dados_df_carregados"] = dados_df
+                            st.success(f"PDF baixado! **{len(dados_df)}** abastecimentos identificados.")
+                        else:
+                            st.error("Falha ao baixar o PDF do Liveposto.")
+
+            if "dados_df_carregados" in st.session_state and dados_df is None:
+                dados_df = st.session_state["dados_df_carregados"]
+
+        if dados_df is not None and not dados_df.empty:
             with st.expander("👁️ Ver prévia dos abastecimentos lidos"):
                 st.dataframe(dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], use_container_width=True)
 
     with col_dashboard:
-        st.subheader("2. Painel de Progresso")
+        st.subheader("2. Painel de Lançamento ZUQ")
         
         m1, m2, m3 = st.columns(3)
-        metric_total = m1.metric("Total no PDF", len(dados_df) if uploaded_file and 'dados_df' in locals() else 0)
+        metric_total = m1.metric("Total de Registros", len(dados_df) if dados_df is not None else 0)
         metric_lancados = m2.metric("Lançados com Sucesso", 0)
         metric_ignorados = m3.metric("Ignorados / Duplicados", 0)
 
         progress_bar = st.progress(0, text="Aguardando início...")
         log_container = st.container(height=350, border=True)
 
-        if st.button("🚀 Iniciar Processamento", use_container_width=True):
-            if not uploaded_file:
-                st.error("Por favor, selecione um ficheiro PDF primeiro.")
+        if st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True):
+            if dados_df is None or dados_df.empty:
+                st.error("Carregue um arquivo PDF ou faça o download via Liveposto primeiro.")
             elif not senha_zuq:
-                st.error("Por favor, informe a senha do ZUQ na barra lateral.")
+                st.error("Informe a senha do ZUQ na barra lateral.")
             else:
                 df_resultado = lancar_no_zuq(
                     dados_df, url_zuq, usuario_zuq, senha_zuq, 
