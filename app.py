@@ -196,6 +196,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--disable-popup-blocking")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
@@ -222,7 +223,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # Ativa o download automático via Chrome DevTools Protocol em modo headless
+    # Permite downloads irrestritos mesmo no modo Headless do Chrome
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -282,7 +283,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         time.sleep(6)
 
-        # 2. SELEÇÃO DO MENU LATERAL E LOCALIZAÇÃO DE FRAMES
+        # 2. SELEÇÃO DO MENU LATERAL
         if log_container:
             log_container.info("📂 Procurando o menu lateral e acionando o relatório...")
 
@@ -331,21 +332,21 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         time.sleep(5)
 
-        # 3. INTERAÇÃO E GARANTIA DE FOCO NO MODAL DO RELATÓRIO
+        # 3. INTERAÇÃO COM O MODAL DO RELATÓRIO
         def alternar_para_frame_do_modal():
             if len(driver.window_handles) > 1:
                 driver.switch_to.window(driver.window_handles[-1])
 
             driver.switch_to.default_content()
             
-            if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar']"):
+            if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar'] | //img[contains(@src,'Visualizar')]"):
                 return True
 
             for frame in driver.find_elements(By.TAG_NAME, "iframe"):
                 try:
                     driver.switch_to.default_content()
                     driver.switch_to.frame(frame)
-                    if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar'] | //input[@type='text']"):
+                    if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar'] | //img[contains(@src,'Visualizar')] | //input[@type='text']"):
                         return True
                 except Exception:
                     continue
@@ -353,7 +354,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         alternar_para_frame_do_modal()
 
-        # 4. CAMPO DE CLIENTE E COMBUSTÍVEL
+        # 4. APLICAÇÃO DOS FILTROS E DATAS
         if cliente_alvo:
             if log_container:
                 log_container.info(f"🏢 Selecionando o Cliente: '{cliente_alvo}'...")
@@ -361,14 +362,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 selects = driver.find_elements(By.TAG_NAME, "select")
                 if selects:
                     Select(selects[0]).select_by_visible_text(cliente_alvo)
-                else:
-                    elem_cli = driver.find_elements(By.XPATH, "//*[contains(@id,'WFRInput') or contains(@class,'lookup')]")
-                    if elem_cli:
-                        driver.execute_script("arguments[0].click();", elem_cli[0])
-                        time.sleep(1)
-                        item_cli = driver.find_elements(By.XPATH, f"//*[contains(text(),'{cliente_alvo}')]")
-                        if item_cli:
-                            driver.execute_script("arguments[0].click();", item_cli[0])
             except Exception as e_cli:
                 if log_container:
                     log_container.warning(f"⚠️ Mantido cliente pré-selecionado ({e_cli})")
@@ -391,7 +384,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 if log_container:
                     log_container.warning(f"⚠️ Mantido combustível pré-selecionado ({e_comb})")
 
-        # 5. PREENCHIMENTO DAS DATAS
         if log_container:
             log_container.info("📅 Inserindo o período das datas...")
 
@@ -438,27 +430,46 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if campo_dt_fim:
             preencher_campo_js(driver, campo_dt_fim, data_fim)
             
-        time.sleep(1)
+        time.sleep(1.5)
 
-        # 6. DISPARO E CAPTURA DO POPUP PDF
+        # 5. DISPARO E AGUARDO DA GERAÇÃO DO RELATÓRIO
         if log_container:
             log_container.info("🖨️ Disparando a geração do arquivo PDF...")
 
         janelas_antes = set(driver.window_handles)
 
-        def clicar_visualizar():
-            script_clique = """
-                var btn = document.querySelector("#Img_Visualizar") ||
-                          document.querySelector("button[id*='Visualizar']") ||
-                          Array.from(document.querySelectorAll("button, a, div")).find(el => el.textContent.includes("Visualizar"));
-                if (btn) {
-                    btn.click();
+        def disparar_clique_visualizar():
+            script_busca_e_clique = """
+                var candidatos = [];
+                
+                var elemId = document.querySelector("#Img_Visualizar") || document.querySelector("[id*='Visualizar']");
+                if (elemId) candidatos.push(elemId);
+                
+                var todos = document.querySelectorAll("button, a, div, img, input, span, td");
+                todos.forEach(function(el) {
+                    var txt = (el.textContent || el.value || el.alt || el.title || el.src || "").toLowerCase();
+                    if (txt.includes("visualizar")) {
+                        candidatos.push(el);
+                    }
+                });
+                
+                for (var i = 0; i < candidatos.length; i++) {
+                    try {
+                        candidatos[i].click();
+                        return true;
+                    } catch(e) {}
+                }
+                
+                if (typeof ebfFormPreview === 'function') {
+                    ebfFormPreview();
                     return true;
                 }
+                
                 return false;
             """
             
-            if driver.execute_script(script_clique):
+            driver.switch_to.default_content()
+            if driver.execute_script(script_busca_e_clique):
                 return True
 
             frames = driver.find_elements(By.TAG_NAME, "iframe")
@@ -466,40 +477,44 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 try:
                     driver.switch_to.default_content()
                     driver.switch_to.frame(f)
-                    if driver.execute_script(script_clique):
+                    if driver.execute_script(script_busca_e_clique):
                         return True
                 except Exception:
                     continue
 
             return False
 
-        if not clicar_visualizar():
-            alternar_para_frame_do_modal()
-            btn_visualizar = wait.until(EC.element_to_be_clickable((
-                By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(text(),'Visualizar')] | //button[contains(.,'Visualizar')]"
-            )))
-            driver.execute_script("arguments[0].click();", btn_visualizar)
-
-        time.sleep(6)
-
-        # 7. TRATAMENTO DA NOVA ABA/JANELA DO POPUP PDF
-        janelas_depois = set(driver.window_handles)
-        novas_janelas = janelas_depois - janelas_antes
-
-        url_pdf_popup = None
-
-        if novas_janelas:
-            driver.switch_to.window(list(novas_janelas)[0])
-            time.sleep(3)
-            url_pdf_popup = driver.current_url
+        for _ in range(10):
+            if disparar_clique_visualizar():
+                break
+            time.sleep(1)
 
         if log_container:
-            log_container.info("📥 Baixando arquivo PDF do pop-up gerado...")
+            log_container.info("⏳ Aguardando o Liveposto processar e abrir a nova janela do PDF...")
+
+        # 6. CAPTURA ATIVA DA NOVA JANELA COM O PDF
+        url_pdf_popup = None
+        
+        # Loop de até 30 segundos aguardando o Webrun abrir a nova janela do relatório
+        for _ in range(30):
+            janelas_atuais = set(driver.window_handles)
+            novas_janelas = janelas_atuais - janelas_antes
+            
+            if novas_janelas:
+                driver.switch_to.window(list(novas_janelas)[0])
+                time.sleep(2)
+                url_pdf_popup = driver.current_url
+                if ".pdf" in url_pdf_popup.lower() or "WFRReports" in url_pdf_popup:
+                    break
+            time.sleep(1)
+
+        if log_container:
+            log_container.info("📥 Baixando arquivo PDF retornado...")
 
         caminho_pdf_baixado = None
 
-        # Tentativa 1: Baixar via biblioteca requests utilizando toda a sessão autenticada do Chromium
-        if url_pdf_popup and ".pdf" in url_pdf_popup.lower():
+        # Estratégia A: Download via requisição HTTP autenticada
+        if url_pdf_popup:
             try:
                 sessao = requests.Session()
                 for cookie in driver.get_cookies():
@@ -511,7 +526,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                     "Referer": driver.current_url
                 }
                 
-                resposta = sessao.get(url_pdf_popup, headers=headers, timeout=30)
+                resposta = sessao.get(url_pdf_popup, headers=headers, timeout=40)
                 if resposta.status_code == 200 and len(resposta.content) > 1000:
                     caminho_dest = os.path.join(download_dir, "relatorio_liveposto.pdf")
                     with open(caminho_dest, "wb") as f:
@@ -519,11 +534,11 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                     caminho_pdf_baixado = caminho_dest
             except Exception as e_http:
                 if log_container:
-                    log_container.warning(f"⚠️ Erro no download direto via HTTP: {e_http}")
+                    log_container.warning(f"⚠️ Erro na requisição direta HTTP: {e_http}")
 
-        # Tentativa 2: Varredura dos downloads gerados pelo comando CDP no diretório temporário
+        # Estratégia B: Varredura de download pelo Chromium CDP no disco
         if not caminho_pdf_baixado:
-            for _ in range(30):
+            for _ in range(20):
                 time.sleep(1)
                 arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
                 if arquivos:
