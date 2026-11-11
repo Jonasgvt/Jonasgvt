@@ -12,6 +12,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
@@ -175,7 +176,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (COM NAVEGAÇÃO JS AVANÇADA)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (HOVER + ID EXATO WEBRUN)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -248,7 +249,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             campo_empresa = inputs_texto[0]
             campo_user = inputs_texto[0]
         else:
-            raise Exception("Nenhum campo de texto encontrado na página de login.")
+            raise Exception("Formulário de autenticação não encontrado.")
 
         campo_pass = inputs_senha[0] if inputs_senha else driver.find_element(By.XPATH, "(//input)[last()]")
 
@@ -257,9 +258,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         preencher_campo_js(driver, campo_pass, senha)
 
         time.sleep(1)
-
-        if log_container:
-            log_container.info("🔑 Efetuando autenticação...")
 
         botoes = driver.find_elements(By.XPATH, "//button | //input[@type='submit' or @type='button']")
         btn_entrar = None
@@ -277,39 +275,46 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         time.sleep(6)
         driver.switch_to.default_content()
 
-        # 2. ABERTURA DO RELATÓRIO VIA INJEÇÃO JS DIRETA
+        # 2. NAVEGAÇÃO NO MENU LATERAL VIA HOVER E ID CAPTURADO (500000966 / 1078205)
         if log_container:
-            log_container.info("📂 Abrindo o formulário de Vendas por Veículo...")
+            log_container.info("📂 Expandindo menu lateral e selecionando o relatório...")
 
-        # Tenta acionar via chamada nativa do Webrun ou varredura DOM
-        aberto = driver.execute_script("""
-            // Método 1: Busca elemento a no DOM principal por ID ou Atributo
-            var elem = document.querySelector("#MenuLateralGamma-item-50925") || 
-                       document.querySelector("[webrun-menu-action-type='form']") ||
-                       document.querySelector("a[href*='500000556']");
-            if (elem) {
-                elem.scrollIntoView(true);
-                elem.click();
+        # Move o ponteiro do mouse para a barra lateral esquerda para ativar o efeito hover
+        try:
+            barra_lateral = driver.find_element(By.XPATH, "//div[contains(@class,'sidebar') or contains(@class,'menu')] | (//div)[1]")
+            ActionChains(driver).move_to_element(barra_lateral).perform()
+            time.sleep(1.5)
+        except Exception:
+            pass
+
+        # Dispara a abertura usando os seletores reais capturados na inspeção de código da imagem
+        seletor_abertura_js = """
+            var item = document.getElementById("MenuLateralGamma-item-1078205") || 
+                       document.querySelector("a[webrun-menu-action-param='500000966']") ||
+                       document.querySelector("a[href*='500000966']");
+            if (item) {
+                item.click();
                 return true;
             }
-            // Método 2: Chamada do motor de formulários do Webrun
             if (typeof ebfFormOpen === 'function') {
-                ebfFormOpen('500000556', '');
+                ebfFormOpen('500000966', '');
                 return true;
             }
             return false;
-        """)
+        """
 
-        if not aberto:
-            # Fallback caso não seja encontrado via JS estático
+        executado = driver.execute_script(seletor_abertura_js)
+
+        if not executado:
+            # Fallback direto via XPath para o ID capturado ou o parâmetro da ação
             link_rel = wait.until(EC.presence_of_element_located((
-                By.XPATH, "//a[contains(@id,'50925') or contains(@href,'500000556') or contains(.,'Vendas por Ve')] | //*[contains(text(),'Vendas por Ve')]"
+                By.XPATH, "//*[@id='MenuLateralGamma-item-1078205'] | //a[@webrun-menu-action-param='500000966'] | //*[contains(text(),'Rel. Vendas por')]"
             )))
-            driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", link_rel)
+            driver.execute_script("arguments[0].click();", link_rel)
 
         time.sleep(5)
 
-        # Switche para a janela/iframe do modal aberto
+        # 3. CONTEXTO DO POPUP / MODAL DO RELATÓRIO
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
@@ -317,27 +322,21 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if frames_modal:
             driver.switch_to.frame(frames_modal[-1])
 
-        # 3. TRATAMENTO DOS CAMPOS DO RELATÓRIO
+        # 4. PREENCHIMENTO DOS CAMPOS DO MODAL DE IMPRESSÃO
         if cliente_alvo:
             if log_container:
-                log_container.info(f"🏢 Selecionando Cliente: '{cliente_alvo}'...")
+                log_container.info(f"🏢 Selecionando o Cliente: '{cliente_alvo}'...")
             try:
                 selects = driver.find_elements(By.TAG_NAME, "select")
                 if selects:
                     Select(selects[0]).select_by_visible_text(cliente_alvo)
-                else:
-                    elem_cli = driver.find_element(By.XPATH, "//*[contains(@id,'WFRInput') or contains(@class,'lookup')]")
-                    elem_cli.click()
-                    time.sleep(1)
-                    item_cli = driver.find_element(By.XPATH, f"//*[contains(text(),'{cliente_alvo}')]")
-                    driver.execute_script("arguments[0].click();", item_cli)
-            except Exception as e_c:
+            except Exception as e_cli:
                 if log_container:
-                    log_container.warning(f"⚠️ Cliente mantido no valor padrão: {e_c}")
+                    log_container.warning(f"⚠️ Mantido cliente pré-selecionado ({e_cli})")
 
         if combustivel_alvo and combustivel_alvo.upper() != "TODOS":
             if log_container:
-                log_container.info(f"⛽ Selecionando Combustível/Empresa: '{combustivel_alvo}'...")
+                log_container.info(f"⛽ Aplicando filtro de Combustível/Empresa: '{combustivel_alvo}'...")
             try:
                 btn_lookup = driver.find_elements(By.XPATH, "//div[contains(@class,'lookup')]//button[contains(@class,'input-group-append')]")
                 if btn_lookup:
@@ -351,14 +350,13 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                     time.sleep(1)
             except Exception as e_comb:
                 if log_container:
-                    log_container.warning(f"⚠️ Combustível mantido no valor padrão: {e_comb}")
+                    log_container.warning(f"⚠️ Mantido combustível pré-selecionado ({e_comb})")
 
-        # 4. PREENCHIMENTO DO PERÍODO
+        # Configura as datas inicial e final
         if log_container:
-            log_container.info("📅 Ajustando o período das datas...")
+            log_container.info("📅 Inserindo o período das datas...")
 
-        inputs_modal = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//input[@type='text']")))
-        
+        inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text']")
         campo_dt_inicio = None
         campo_dt_fim = None
 
@@ -378,16 +376,19 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         preencher_campo_js(driver, campo_dt_fim, data_fim)
         time.sleep(1)
 
-        # 5. GERAR PDF
+        # 5. GERAR O PDF (BOTÃO VISUALIZAR DO MODAL)
         if log_container:
-            log_container.info("🖨️ Disparando a geração do PDF...")
+            log_container.info("🖨️ Disparando a geração do arquivo PDF...")
 
         janelas_antes = driver.window_handles
 
-        btn_visualizar = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[@id='Img_Visualizar'] | //button[contains(.,'Visualizar')] | //button[contains(@class,'btn') and .//span[contains(text(),'Visualizar')]]"
-        )))
-        driver.execute_script("arguments[0].click();", btn_visualizar)
+        try:
+            btn_visualizar = driver.find_element(By.XPATH, "//*[@id='Img_Visualizar'] | //button[contains(.,'Visualizar')]")
+            driver.execute_script("arguments[0].click();", btn_visualizar)
+        except Exception:
+            btn_visualizar = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'Visualizar')]")))
+            driver.execute_script("arguments[0].click();", btn_visualizar)
+
         time.sleep(5)
 
         janelas_depois = driver.window_handles
@@ -396,8 +397,9 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             time.sleep(2)
 
         if log_container:
-            log_container.info("📥 Concluindo o download do arquivo PDF...")
+            log_container.info("📥 Baixando arquivo PDF gerado...")
 
+        # 6. CAPTURA DO PDF BAIXADO
         caminho_pdf_baixado = None
         for _ in range(35):
             time.sleep(1)
