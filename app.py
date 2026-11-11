@@ -21,130 +21,165 @@ from selenium.common.exceptions import (
 )
 
 # ---------------------------------------------------------
-# CONFIGURAÇÃO DE PÁGINA E CSS CUSTOMIZADO (CLEAN SAAS UI)
+# CONFIGURAÇÃO DE PÁGINA E ESTILO APPLE GLASS (MINHAS PARCELAS)
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="ZUQ Fleet Auto | Automação de Abastecimentos",
+    page_title="ZUQ Fleet - Apple Glass",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Injeção de CSS para recriar a interface do zero no estilo Vercel / Netlify
+# Estilização CSS inspirada no Minhas Parcelas (Apple Glass Dark PWA)
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
+    /* Reset global de fonte e fundo Dark Neon */
     html, body, [class*="css"] {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-        background-color: #F8FAFC !important;
-        color: #0F172A !important;
+        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Plus Jakarta Sans', sans-serif !important;
     }
 
-    /* Ocultar elementos padrão do Streamlit */
+    .stApp {
+        background: radial-gradient(circle at 0% 0%, rgba(10, 132, 255, 0.22) 0%, transparent 45%),
+                    radial-gradient(circle at 100% 40%, rgba(191, 90, 242, 0.18) 0%, transparent 50%),
+                    radial-gradient(circle at 50% 100%, rgba(48, 209, 88, 0.15) 0%, transparent 55%),
+                    #0b0f19 !important;
+        background-attachment: fixed !important;
+        color: #FFFFFF !important;
+    }
+
     #MainMenu, footer, header { visibility: hidden; }
     
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 2.5rem !important;
-        max-width: 1280px !important;
+        max-width: 1200px !important;
     }
 
-    /* Cabeçalho do Aplicativo */
-    .brand-bar {
+    /* Topbar / Logo Glass Header */
+    .glass-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding-bottom: 1rem;
-        margin-bottom: 1.5rem;
-        border-bottom: 1px solid #E2E8F0;
+        padding: 14px 20px;
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(28px) saturate(190%);
+        -webkit-backdrop-filter: blur(28px) saturate(190%);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 20px;
+        margin-bottom: 1.8rem;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
     }
-
-    .brand-title {
-        font-size: 1.4rem;
+    
+    .glass-logo {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 1.25rem;
         font-weight: 700;
-        color: #0F172A;
-        letter-spacing: -0.02em;
+        color: #FFFFFF;
+        letter-spacing: -0.5px;
     }
 
-    .brand-badge {
-        background-color: #EFF6FF;
-        color: #2563EB;
+    .glass-badge {
+        background: rgba(10, 132, 255, 0.2);
+        color: #0A84FF;
         font-size: 0.75rem;
-        font-weight: 600;
-        padding: 0.25rem 0.65rem;
-        border-radius: 9999px;
-        border: 1px solid #BFDBFE;
+        font-weight: 700;
+        padding: 4px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(10, 132, 255, 0.3);
     }
 
-    /* Títulos de Seções */
-    .section-label {
-        font-size: 0.88rem;
-        font-weight: 600;
-        color: #475569;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin-bottom: 0.6rem;
-    }
-
-    /* Estilização dos Cards de Métricas */
+    /* Cards de Métricas Apple Glass */
     div[data-testid="stMetric"] {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 10px !important;
-        padding: 0.9rem 1.1rem !important;
-        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03) !important;
+        background: rgba(255, 255, 255, 0.06) !important;
+        backdrop-filter: blur(28px) saturate(190%) !important;
+        -webkit-backdrop-filter: blur(28px) saturate(190%) !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        border-radius: 20px !important;
+        padding: 16px 20px !important;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25) !important;
     }
 
     div[data-testid="stMetricLabel"] {
-        color: #64748B !important;
-        font-size: 0.75rem !important;
-        font-weight: 600 !important;
+        color: rgba(255, 255, 255, 0.65) !important;
+        font-size: 0.72rem !important;
+        font-weight: 700 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
     }
 
     div[data-testid="stMetricValue"] {
-        color: #0F172A !important;
-        font-size: 1.6rem !important;
-        font-weight: 700 !important;
+        color: #FFFFFF !important;
+        font-size: 1.7rem !important;
+        font-weight: 800 !important;
+        letter-spacing: -0.5px;
     }
 
-    /* Botão Principal Estilo SaaS */
+    /* Botão Vibrante Apple Blue */
     .stButton > button {
-        background: linear-gradient(180deg, #2563EB 0%, #1D4ED8 100%) !important;
+        background: #0A84FF !important;
         color: #FFFFFF !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
         font-size: 0.95rem !important;
         border: none !important;
-        border-radius: 8px !important;
-        height: 3rem !important;
-        box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2) !important;
-        transition: all 0.2s ease !important;
+        border-radius: 999px !important;
+        height: 3.2rem !important;
+        box-shadow: 0 8px 24px rgba(10, 132, 255, 0.4) !important;
+        transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
     }
 
     .stButton > button:hover {
-        background: linear-gradient(180deg, #1D4ED8 0%, #1E40AF 100%) !important;
-        box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3) !important;
+        transform: scale(0.98) !important;
+        box-shadow: 0 12px 28px rgba(10, 132, 255, 0.5) !important;
     }
 
-    /* Ajustes para inputs em geral */
+    /* Inputs e Selects Translucidos */
     div[data-baseweb="input"] {
-        background-color: #FFFFFF !important;
-        border-radius: 6px !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+        backdrop-filter: blur(28px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        border-radius: 14px !important;
+        color: #FFFFFF !important;
     }
 
-    /* Expander / Configurações */
+    div[data-baseweb="input"] input {
+        color: #FFFFFF !important;
+    }
+
+    /* Expander Glass */
     details {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 10px !important;
-        padding: 0.5rem 1rem !important;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
+        background: rgba(255, 255, 255, 0.05) !important;
+        backdrop-filter: blur(28px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        border-radius: 20px !important;
+        padding: 10px 16px !important;
+        color: #FFFFFF !important;
+    }
+
+    summary {
+        color: #FFFFFF !important;
+        font-weight: 600 !important;
+    }
+
+    /* File Uploader Customizado */
+    div[data-testid="stFileUploader"] {
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px dashed rgba(255, 255, 255, 0.2) !important;
+        border-radius: 20px !important;
+        padding: 15px !important;
+    }
+    
+    .stMarkdown h3, .stMarkdown label {
+        color: rgba(255, 255, 255, 0.85) !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# AUTENTICAÇÃO E SEGURANÇA
+# AUTENTICAÇÃO
 # ---------------------------------------------------------
 def verificar_senha():
     SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
@@ -156,21 +191,21 @@ def verificar_senha():
         return True
 
     st.markdown('<div style="text-align: center; margin-top: 5rem;">', unsafe_allow_html=True)
-    st.markdown('<div style="font-size: 2rem; font-weight: 700; color: #0F172A; margin-bottom: 0.5rem;">⚡ ZUQ Auto</div>', unsafe_allow_html=True)
-    st.markdown('<div style="font-size: 0.95rem; color: #64748B; margin-bottom: 2rem;">Acesso restrito. Digite a senha corporativa para acessar o painel.</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size: 2.2rem; font-weight: 800; color: #FFFFFF; letter-spacing: -0.6px;">⚡ ZUQ Auto</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size: 0.95rem; color: rgba(255,255,255,0.65); margin-bottom: 2rem;">Acesso restrito. Digite a senha corporativa para continuar.</div>', unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1.2, 1, 1.2])
     with col2:
         with st.form("form_login"):
-            senha_digitada = st.text_input("Senha de Acesso", type="password", placeholder="Sua senha")
-            btn_login = st.form_submit_button("Entrar no Sistema", use_container_width=True)
+            senha_digitada = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha")
+            btn_login = st.form_submit_button("Entrar", use_container_width=True)
 
             if btn_login:
                 if senha_digitada == SENHA_CORRETA:
                     st.session_state["autenticado"] = True
                     st.rerun()
                 else:
-                    st.error("❌ Senha incorreta.")
+                    st.error("❌ Credencial inválida.")
     st.markdown('</div>', unsafe_allow_html=True)
                     
     return False
@@ -289,7 +324,7 @@ def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
         driver.get(url)
     except TimeoutException:
         if log_container:
-            log_container.warning(f"⏳ Interrompendo scripts secundários em {url}...")
+            log_container.warning(f"⏳ Interrompendo scripts em {url}...")
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
@@ -307,7 +342,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
         except excecoes_capturadas as e:
             tempo_espera = intervalo_base * (2 ** (tentativa - 1))
             if log_container:
-                log_container.warning(f"⚠️ Tentativa {tentativa}/{max_tentativas}... (Aguardando {tempo_espera:.1f}s)")
+                log_container.warning(f"⚠️ Tentativa {tentativa}/{max_tentativas}...")
             
             if tentativa == max_tentativas:
                 raise e
@@ -356,7 +391,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
                 
                 if not opcoes:
-                    log_container.warning(f"⚠️ Placa {placa} não encontrada no ZUQ.")
+                    log_container.warning(f"⚠️ Placa {placa} não cadastrada no ZUQ.")
                     btn_cancelar = driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]")
                     btn_cancelar.click()
                     time.sleep(0.8)
@@ -440,14 +475,14 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 time.sleep(1.2)
 
                 fechar_alerta_se_existir(driver, log_container)
-                log_container.info("✅ Registro excedente removido.")
+                log_container.info("✅ Registro removido.")
                 time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
                 log_container.error(f"❌ Erro ao remover duplicata: {e_rem}")
 
         elif len(linhas_duplicadas) == 1:
-            log_container.info(f"🔍 Abastecimento {data} ({litros}L) já existente. Pulando...")
+            log_container.info(f"🔍 Registro {data} ({litros}L) já existe. Pulando...")
             return True, True, placa
 
     except Exception:
@@ -456,7 +491,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
     return True, False, placa
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO PRINCIPAL DE SUBMISSÃO
+# AUTOMAÇÃO DE LANÇAMENTO
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
@@ -496,7 +531,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
     total_registros = len(df)
 
     try:
-        log_container.info("🌐 Inicializando robô de integração...")
+        log_container.info("🌐 Conectando à instância ZUQ...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -519,7 +554,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 campo_senha.send_keys(Keys.ENTER)
 
         executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        log_container.info("🔐 Autenticado no portal ZUQ!")
+        log_container.info("🔐 Autenticação concluída com sucesso.")
         time.sleep(3)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
@@ -543,13 +578,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     log_container=log_container
                 )
             except Exception as e_dup:
-                log_container.error(f"❌ Erro na validação de {row['placa']}: {e_dup}")
+                log_container.error(f"❌ Erro ao validar {row['placa']}: {e_dup}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = f"Falha na verificação: {str(e_dup)}"
+                df_relatorio.at[idx, 'observacao'] = f"Falha na validação: {str(e_dup)}"
                 continue
 
             if not placa_existe:
@@ -558,7 +593,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada no ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada'
                 continue
 
             if ja_cadastrado:
@@ -567,7 +602,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Duplicado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Registro já existente'
+                df_relatorio.at[idx, 'observacao'] = 'Registro já existe'
                 continue
 
             def abrir_formulario():
@@ -578,13 +613,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             try:
                 executar_com_retry(abrir_formulario, max_tentativas=3, log_container=log_container)
             except Exception as e_nav:
-                log_container.error(f"❌ Falha ao abrir formulário para {row['placa']}: {e_nav}")
+                log_container.error(f"❌ Falha no formulário: {e_nav}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = f"Falha ao carregar formulário: {str(e_nav)}"
+                df_relatorio.at[idx, 'observacao'] = f"Falha no formulário: {str(e_nav)}"
                 continue
 
             def selecionar_veiculo():
@@ -609,7 +644,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             try:
                 veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
                 if not veiculo_encontrado:
-                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado nas opções.")
+                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado.")
                     qtd_ignorados += 1
                     metric_ignorados.metric("Ignorados", qtd_ignorados)
                     
@@ -688,7 +723,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
                         erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
                         if erros_km and erros_km[0].is_displayed():
-                            log_container.warning("⚠️ Conflito no Odômetro! Corrigindo...")
+                            log_container.warning("⚠️ Conflito no Odômetro! Limpando...")
                             campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                             driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
                             time.sleep(0.5)
@@ -706,19 +741,19 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 if salvo:
                     ultima_placa_filtrada = ""
             except Exception as e_save:
-                log_container.error(f"❌ Não foi possível salvar registro de {row['placa']}: {e_save}")
-                df_relatorio.at[idx, 'observacao'] = f"Erro no salvamento: {str(e_save)}"
+                log_container.error(f"❌ Erro ao salvar {row['placa']}: {e_save}")
+                df_relatorio.at[idx, 'observacao'] = f"Erro ao salvar: {str(e_save)}"
 
             time.sleep(1.0)
             fechar_alerta_se_existir(driver, log_container)
 
             if salvo:
                 qtd_lancados += 1
-                metric_lancados.metric("Lançados com Sucesso", qtd_lancados)
+                metric_lancados.metric("Sucesso", qtd_lancados)
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Sucesso'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Lançado no ZUQ com sucesso'
+                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso'
             else:
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
@@ -726,7 +761,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
                 if not df_relatorio.at[idx, 'observacao']:
-                    df_relatorio.at[idx, 'observacao'] = 'Falha no envio do formulário'
+                    df_relatorio.at[idx, 'observacao'] = 'Falha ao salvar'
 
         log_container.success("🎉 Todos os abastecimentos foram processados!")
 
@@ -738,18 +773,17 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
     return df_relatorio
 
 # ---------------------------------------------------------
-# RENDERIZAÇÃO DA INTERFACE PRINCIPAL
+# RENDERIZAÇÃO DA INTERFACE APPLE GLASS
 # ---------------------------------------------------------
 if verificar_senha():
-    # Top Bar Estilo App
+    # Header Apple Glass
     st.markdown("""
-        <div class="brand-bar">
-            <div class="brand-title">⚡ ZUQ Auto Fleet</div>
-            <div class="brand-badge">Versão 3.0 Clean</div>
+        <div class="glass-header">
+            <div class="glass-logo">⚡ ZUQ Fleet <span class="glass-badge">Apple Glass Edition</span></div>
         </div>
     """, unsafe_allow_html=True)
 
-    # Configurações do ZUQ em um Expander limpo
+    # Parâmetros em Expander Glass
     with st.expander("⚙️ Parâmetros de Conexão ZUQ", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         usuario_zuq = c1.text_input("Usuário", value="manutencaoverdesmares")
@@ -759,20 +793,19 @@ if verificar_senha():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Split em 2 colunas principais
     col_upload, col_control = st.columns([1, 1.1], gap="large")
 
     with col_upload:
-        st.markdown('<div class="section-label">1. Upload do Arquivo (PDF / TXT)</div>', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader("Arraste ou selecione o arquivo do Liveposto", type=["pdf", "txt"], label_visibility="collapsed")
+        st.markdown("### 📁 1. Ficheiro Liveposto")
+        uploaded_file = st.file_uploader("Upload de relatório em PDF ou TXT", type=["pdf", "txt"], label_visibility="collapsed")
 
         dados_df = None
         if uploaded_file:
             dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            st.success(f"✅ **{len(dados_df)}** abastecimentos válidos lidos.")
+            st.success(f"✅ **{len(dados_df)}** abastecimentos identificados.")
 
             st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown('<div class="section-label">Prévia dos Registros</div>', unsafe_allow_html=True)
+            st.markdown("### 👁️ Prévia dos Dados")
             st.dataframe(
                 dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], 
                 use_container_width=True,
@@ -780,11 +813,11 @@ if verificar_senha():
             )
 
     with col_control:
-        st.markdown('<div class="section-label">2. Controle da Automação</div>', unsafe_allow_html=True)
+        st.markdown("### 📊 2. Lançamento Automático")
         
         kpi1, kpi2, kpi3 = st.columns(3)
-        metric_total = kpi1.metric("Total Identificado", len(dados_df) if dados_df is not None else 0)
-        metric_lancados = kpi2.metric("Lançados com Sucesso", 0)
+        metric_total = kpi1.metric("Total de Registos", len(dados_df) if dados_df is not None else 0)
+        metric_lancados = kpi2.metric("Sucesso", 0)
         metric_ignorados = kpi3.metric("Ignorados", 0)
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -797,7 +830,7 @@ if verificar_senha():
 
         if btn_iniciar:
             if dados_df is None or dados_df.empty:
-                st.error("Faça o upload do arquivo PDF/TXT antes de iniciar.")
+                st.error("Faça o upload do ficheiro PDF/TXT antes de iniciar.")
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ nas configurações acima.")
             else:
@@ -811,7 +844,7 @@ if verificar_senha():
                     csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
 
                     st.divider()
-                    st.markdown("### 📋 Relatório Consolidado de Auditoria")
+                    st.markdown("### 📋 Relatório Consolidado")
                     st.dataframe(
                         df_resultado[['placa', 'data', 'quantidade', 'status_lancamento', 'observacao']], 
                         use_container_width=True
