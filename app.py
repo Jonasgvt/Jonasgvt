@@ -175,7 +175,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (ROBUSTA & SEM IDs DINÂMICOS)
 # ---------------------------------------------------------
 def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_container=None):
     download_dir = tempfile.mkdtemp()
@@ -212,7 +212,7 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    driver.set_page_load_timeout(20)
+    driver.set_page_load_timeout(25)
     wait = WebDriverWait(driver, 20)
 
     try:
@@ -220,37 +220,39 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
             log_container.info("🌐 Conectando ao portal Liveposto...")
 
         driver.get("https://posto.liveposto.com.br/")
+        time.sleep(2)
         
-        # 1. AUTENTICAÇÃO
-        try:
-            campo_empresa = wait.until(EC.element_to_be_clickable((By.ID, "WFRInput1045614")))
-        except Exception:
-            campo_empresa = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Empresa')]/following::input[1]")))
+        # 1. TELA DE LOGIN (Busca pelos containers fixos do Webrun)
+        # Campo Empresa (#Empresa)
+        campo_empresa = wait.until(EC.element_to_be_clickable((
+            By.XPATH, "//*[@id='Empresa']//input | //label[contains(text(),'Empresa')]/following::input[1] | (//input[@type='text'])[1]"
+        )))
         campo_empresa.click()
         campo_empresa.send_keys(Keys.CONTROL + "a")
         campo_empresa.send_keys(Keys.BACKSPACE)
         digitar_devagar(campo_empresa, empresa, atraso=0.03)
 
-        try:
-            campo_user = driver.find_element(By.ID, "WFRInput1045611")
-        except NoSuchElementException:
-            campo_user = driver.find_element(By.XPATH, "//label[contains(text(),'Usuário')]/following::input[1]")
+        # Campo Usuário (#Usuario ou #Login)
+        campo_user = wait.until(EC.element_to_be_clickable((
+            By.XPATH, "//*[@id='Usuario' or @id='Login']//input | //label[contains(text(),'Usuário')]/following::input[1] | (//input[@type='text'])[2]"
+        )))
         campo_user.click()
         campo_user.send_keys(Keys.CONTROL + "a")
         campo_user.send_keys(Keys.BACKSPACE)
         digitar_devagar(campo_user, usuario, atraso=0.03)
 
-        try:
-            campo_pass = driver.find_element(By.ID, "WFRInput1045612")
-        except NoSuchElementException:
-            campo_pass = driver.find_element(By.XPATH, "//label[contains(text(),'Senha')]/following::input[1]")
+        # Campo Senha (#Senha)
+        campo_pass = wait.until(EC.element_to_be_clickable((
+            By.XPATH, "//*[@id='Senha']//input | //label[contains(text(),'Senha')]/following::input[1] | //input[@type='password']"
+        )))
         campo_pass.click()
         campo_pass.send_keys(Keys.CONTROL + "a")
         campo_pass.send_keys(Keys.BACKSPACE)
         digitar_devagar(campo_pass, senha, atraso=0.03)
 
+        # Botão Entrar (#btnLogin)
         try:
-            btn_entrar = driver.find_element(By.XPATH, "//*[@id='btnLogin']//button | //*[@id='btnLogin']")
+            btn_entrar = driver.find_element(By.XPATH, "//*[@id='btnLogin'] | //button[contains(.,'Entrar')] | //*[contains(@class,'btn-login')]")
             btn_entrar.click()
         except NoSuchElementException:
             campo_pass.send_keys(Keys.ENTER)
@@ -260,41 +262,32 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
             log_container.info("🔑 Autenticado! Acessando o relatório 'Vendas por Veículo'...")
 
         # 2. SELEÇÃO DO MENU LATERAL
-        menu_relatorio = wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//*[@webrun-menu-action-type='form' and contains(.,'500000556')] | //*[contains(text(),'Vendas por Veículo')] | //span[contains(text(),'Rel.')]")
-        ))
+        menu_relatorio = wait.until(EC.element_to_be_clickable((
+            By.XPATH, "//*[contains(text(),'Vendas por Veículo')] | //*[@webrun-menu-action-type='form' and contains(.,'500000556')] | //span[contains(text(),'Rel.')]"
+        )))
         menu_relatorio.click()
         time.sleep(3)
 
-        # Troca de iframe/janela se necessário
-        if len(driver.window_handles) > 1:
-            driver.switch_to.window(driver.window_handles[-1])
-
+        # Trata iFrames do Webrun caso a janela abra englobada
         frames = driver.find_elements(By.TAG_NAME, "iframe")
         if frames:
             driver.switch_to.frame(frames[-1])
 
-        # 3. PREENCHIMENTO DAS DATAS (IDs Inspecionados WFRInput1080940 e WFRInput1080941)
+        # 3. PREENCHIMENTO DAS DATAS NA JANELA MODAL
         if log_container:
             log_container.info("📅 Preenchendo o período inicial e final...")
 
-        # Período Inicial
-        try:
-            campo_dt_inicio = wait.until(EC.presence_of_element_located((By.ID, "WFRInput1080940")))
-        except Exception:
-            campo_dt_inicio = wait.until(EC.presence_of_element_located((By.XPATH, "//label[contains(text(),'Período Inicial')]/following::input[1]")))
-        
+        campo_dt_inicio = wait.until(EC.presence_of_element_located((
+            By.XPATH, "//label[contains(text(),'Período Inicial') or contains(text(),'Inicial')]/following::input[1]"
+        )))
         campo_dt_inicio.click()
         campo_dt_inicio.send_keys(Keys.CONTROL + "a")
         campo_dt_inicio.send_keys(Keys.BACKSPACE)
         digitar_devagar(campo_dt_inicio, data_inicio, atraso=0.04)
 
-        # Período Final
-        try:
-            campo_dt_fim = driver.find_element(By.ID, "WFRInput1080941")
-        except NoSuchElementException:
-            campo_dt_fim = driver.find_element(By.XPATH, "//label[contains(text(),'Período Final')]/following::input[1]")
-            
+        campo_dt_fim = wait.until(EC.presence_of_element_located((
+            By.XPATH, "//label[contains(text(),'Período Final') or contains(text(),'Final')]/following::input[1]"
+        )))
         campo_dt_fim.click()
         campo_dt_fim.send_keys(Keys.CONTROL + "a")
         campo_dt_fim.send_keys(Keys.BACKSPACE)
@@ -302,21 +295,19 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
 
         time.sleep(1)
 
-        # 4. CLIQUE NO BOTÃO VISUALIZAR (#Img_Visualizar)
+        # 4. CLIQUE NO BOTÃO VISUALIZAR
         if log_container:
             log_container.info("🖨️ Solicitando a geração do PDF...")
 
-        try:
-            btn_visualizar = wait.until(EC.element_to_be_clickable((By.ID, "Img_Visualizar")))
-            btn_visualizar.click()
-        except Exception:
-            btn_visualizar = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@bs-title='Visualizar o Relatório'] | //button[contains(.,'Visualizar')]")))
-            btn_visualizar.click()
+        btn_visualizar = wait.until(EC.element_to_be_clickable((
+            By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(@bs-title,'Visualizar')] | //button[contains(.,'Visualizar')] | //span[contains(text(),'Visualizar')]/ancestor::button"
+        )))
+        btn_visualizar.click()
 
         if log_container:
             log_container.info("📥 Aguardando download do relatório PDF...")
 
-        # 5. RETORNO DO PDF BAIXADO
+        # 5. AGUARDAR O ARQUIVO SALVAR
         caminho_pdf_baixado = None
         for _ in range(25):
             time.sleep(1)
@@ -329,13 +320,13 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
 
     except Exception as e:
         if log_container:
-            log_container.error(f"❌ Erro ao interagir com a janela do Liveposto: {e}")
+            log_container.error(f"❌ Erro ao interagir com o Liveposto: {e}")
         return None
     finally:
         driver.quit()
 
 # ---------------------------------------------------------
-# CHECAGEM DE DUPLICATAS ROBUSTA
+# CHECAGEM DE DUPLICATAS ROBUSTA (ZUQ)
 # ---------------------------------------------------------
 def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litros, preco, ultima_placa_filtrada, log_container):
     try:
