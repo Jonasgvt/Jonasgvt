@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER DE PDF / TXT LIVEPOSTO
+# PARSER AJUSTADO PARA CAPTURAR VLR. UNITÁRIO CORRETAMENTE
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -263,6 +263,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
+            # Captura de KM Atual (ex: 163.179 ou 163179)
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
@@ -272,6 +273,15 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 nums_filtrados = [n for n in nums_linha if n != cupom]
                 if nums_filtrados:
                     km = nums_filtrados[0]
+
+            # Captura a Quantidade na linha principal (ex: 156,10)
+            nums_linha_principal = re.findall(r'(\d+(?:[\.,]\d+)?)', line)
+            qtd_principal = "0,00"
+            for n in nums_linha_principal:
+                v = limpa_numero(n)
+                if 10.0 <= v <= 900.0 and n != km and n != cupom:
+                    qtd_principal = n
+                    break
 
             j = i + 1
             while j < len(lines):
@@ -288,40 +298,35 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                         busca_linha += " " + lines[j+1].strip()
 
                     numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', busca_linha)
-                    nums_validos = [n for n in numeros if ',' in n or '.' in n]
+                    
+                    vlr_unit = "7,600"
+                    quantidade = qtd_principal
+                    valor_total = "0,00"
 
-                    if nums_validos:
-                        vlr_unit = "7,600"
-                        quantidade = "0,00"
-                        valor_total = "0,00"
-
-                        for num in nums_validos:
+                    if numeros:
+                        for num in numeros:
                             val_float = limpa_numero(num)
-                            if 5.0 <= val_float <= 10.0 and vlr_unit == "7,600":
+                            # Regra para Valor Unitário do Litro (geralmente entre R$ 4,50 e R$ 9,50)
+                            if 4.5 <= val_float <= 9.5 and vlr_unit == "7,600":
                                 vlr_unit = num
-                            elif val_float > 15.0 and quantidade == "0,00":
+                            # Regra para Quantidade em Litros detalhada caso não tenha pego na linha principal
+                            elif val_float > 10.0 and val_float < 900.0 and quantidade == "0,00":
                                 quantidade = num
-                            elif val_float > 200.0 and valor_total == "0,00":
+                            elif val_float >= 100.0 and valor_total == "0,00":
                                 valor_total = num
 
-                        if quantidade == "0,00" and len(nums_validos) >= 2:
-                            vlr_unit = nums_validos[0]
-                            quantidade = nums_validos[1]
-                            if len(nums_validos) >= 3:
-                                valor_total = nums_validos[2]
-
-                        registos.append({
-                            'data': dt_str,
-                            'hora': hora,
-                            'cupom': cupom,
-                            'placa': placa,
-                            'produto': produto_nome,
-                            'quantidade': quantidade,
-                            'valor_unitario': vlr_unit,
-                            'valor_total': valor_total,
-                            'km': km
-                        })
-                        break
+                    registos.append({
+                        'data': dt_str,
+                        'hora': hora,
+                        'cupom': cupom,
+                        'placa': placa,
+                        'produto': produto_nome,
+                        'quantidade': quantidade,
+                        'valor_unitario': vlr_unit,
+                        'valor_total': valor_total,
+                        'km': km
+                    })
+                    break
                 j += 1
 
         i += 1
@@ -402,7 +407,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# VERIFICAÇÃO, CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ
+# CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ
 # ---------------------------------------------------------
 def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros, preco, cupom, hora, FORNECEDOR, ultima_placa_filtrada, log_container):
     try:
@@ -502,16 +507,14 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                     linha_encontrada = linha
                     break
 
-        # CASO 1: Registro EXISTE no ZUQ -> Verifica e Atualiza Divergências
         if linha_encontrada:
             texto_linha = linha_encontrada.text
-            log_container.info(f"🔍 Registro encontrado no ZUQ para {placa} em {data}. Verificando divergências...")
+            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando se há divergência...")
 
             km_no_zuq = target_km in re.sub(r'\D', '', texto_linha) if target_km else True
 
-            # Se o KM não bater ou estiver zerado no ZUQ, abrimos para EDITAR
             if not km_no_zuq or "0,00" in texto_linha or "0.00" in texto_linha:
-                log_container.warning(f"✏️ Divergência detectada no ZUQ. Editando registro de {placa}...")
+                log_container.warning(f"✏️ Corrigindo registro no ZUQ para a placa {placa}...")
 
                 try:
                     link_registro = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
@@ -521,21 +524,19 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
                 time.sleep(1.8)
 
-                # Clica em Editar
                 try:
                     btn_editar = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]")))
                     btn_editar.click()
                     time.sleep(1.5)
                 except Exception as e_ed:
-                    log_container.error(f"❌ Não foi possível clicar no botão Editar: {e_ed}")
+                    log_container.error(f"❌ Não foi possível abrir edição: {e_ed}")
                     return True, "Erro ao abrir edição", placa
 
-                # Atualiza os campos necessários com os dados do PDF
                 if km and km != "0":
                     try:
                         campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                         driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, km)
-                        log_container.info(f"✏️ KM no ZUQ atualizado para: {km}")
+                        log_container.info(f"✏️ KM ajustado para: {km}")
                     except Exception: pass
 
                 if target_litros > 0:
@@ -550,7 +551,6 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                         driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, preco)
                     except Exception: pass
 
-                # Clica em Salvar
                 for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
                     try:
                         btn_salvar = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
@@ -560,15 +560,14 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                     except Exception: 
                         continue
 
-                log_container.success(f"✅ ZUQ Atualizado com sucesso para {placa}!")
+                log_container.success(f"✅ Registro no ZUQ atualizado para {placa}!")
                 return True, "Atualizado no ZUQ (Editado)", placa
             else:
-                log_container.info(f"✅ Registro já está 100% correto no ZUQ.")
+                log_container.info(f"✅ Registro no ZUQ já está 100% correto.")
                 return True, "Já Cadastrado (Sem divergência)", placa
 
-        # CASO 2: Registro NÃO existe no ZUQ -> Criar do zero
         else:
-            log_container.info(f"➕ Registro não encontrado no ZUQ. Criando novo lançamento para {placa}...")
+            log_container.info(f"➕ Criando novo abastecimento no ZUQ para {placa}...")
             return False, "Criar Novo", placa
 
     except Exception as e:
@@ -576,7 +575,7 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
         return False, f"Erro na análise: {str(e)}", placa
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE LANÇAMENTO E EDICAO ZUQ
+# AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
@@ -655,11 +654,10 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             cupom_str = str(row['cupom']) if 'cupom' in row and pd.notna(row['cupom']) else "0"
             hora_str = str(row['hora']) if 'hora' in row and pd.notna(row['hora']) else "08:00:00"
 
-            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {placa_str}** | Data: {row['data']} | Vol: {row['quantidade']}L | KM: {km_str if km_str else 'N/A'}")
+            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {placa_str}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço/L: R$ {row['valor_unitario']} | KM: {km_str if km_str else 'N/A'}")
 
             fechar_alerta_se_existir(driver, log_container)
 
-            # Analisa se já existe no ZUQ e edita caso haja divergências
             existe, status_obs, ultima_placa_filtrada = conciliar_ou_criar_registro(
                 driver, wait, base_url, placa_str, str(row['data']), km_str, str(row['quantidade']), str(row['valor_unitario']), cupom_str, hora_str, FORNECEDOR, ultima_placa_filtrada, log_container
             )
@@ -673,7 +671,6 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 df_relatorio.at[idx, 'observacao'] = status_obs
                 continue
 
-            # Se não existia, faz a inserção do novo registro
             def abrir_formulario():
                 url_form = f"{base_url}/secure/manager/maintenance/#/fuel/new"
                 navegar_com_timeout_seguro(driver, url_form, timeout=10, log_container=log_container)
