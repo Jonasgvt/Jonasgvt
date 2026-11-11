@@ -21,26 +21,138 @@ from selenium.common.exceptions import (
 )
 
 # ---------------------------------------------------------
-# CONFIGURAÇÃO DE ESTILO E PÁGINA
+# CONFIGURAÇÃO DE PÁGINA E DESIGN SYSTEM (EXECUTIVO)
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Gestão de Abastecimentos ZUQ",
-    page_icon="⛽",
+    page_title="Gestão Integrada ZUQ | Central de Lançamentos",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# CSS Customizado - Tema Corporativo / SaaS Executivo
 st.markdown("""
     <style>
-    .main-header { font-size: 2.2rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0.5rem; }
-    .sub-header { font-size: 1rem; color: #6B7280; margin-bottom: 1.5rem; }
-    .stButton>button { background-color: #2563EB; color: white; font-weight: 600; border-radius: 8px; height: 3rem; }
-    .stButton>button:hover { background-color: #1D4ED8; }
+    /* Importação de Fonte Google Inter */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    /* Fundo Principal */
+    .stApp {
+        background-color: #F8FAFC;
+    }
+
+    /* Ocultar elementos desnecessários */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Cabeçalhos Principais */
+    .hero-title {
+        font-size: 2.1rem;
+        font-weight: 700;
+        color: #0F172A;
+        letter-spacing: -0.02em;
+        margin-bottom: 0.2rem;
+    }
+    
+    .hero-subtitle {
+        font-size: 0.95rem;
+        color: #64748B;
+        font-weight: 400;
+        margin-bottom: 2rem;
+    }
+
+    /* Cards de Métricas e KPIs */
+    div[data-testid="stMetric"] {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 1.2rem 1.5rem;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+    }
+    
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        color: #64748B !important;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    div[data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+        color: #0F172A !important;
+    }
+
+    /* Botão Primário (Ação Principal) */
+    .stButton > button {
+        background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 100%);
+        color: #FFFFFF;
+        font-weight: 600;
+        font-size: 0.95rem;
+        border: none;
+        border-radius: 8px;
+        padding: 0.65rem 1.2rem;
+        transition: all 0.2s ease-in-out;
+        box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+    }
+
+    .stButton > button:hover {
+        background: linear-gradient(135deg, #1E40AF 0%, #1D4ED8 100%);
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        transform: translateY(-1px);
+        color: #FFFFFF;
+    }
+
+    /* Containers Arredondados com Borda Estilo Card */
+    .exec-card {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+    }
+
+    .exec-card-header {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #0F172A;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    /* Estilização da Sidebar Lateral */
+    section[data-testid="stSidebar"] {
+        background-color: #0F172A !important;
+    }
+
+    section[data-testid="stSidebar"] * {
+        color: #F1F5F9 !important;
+    }
+
+    section[data-testid="stSidebar"] input {
+        background-color: #1E293B !important;
+        color: #FFFFFF !important;
+        border: 1px solid #334155 !important;
+        border-radius: 6px !important;
+    }
+
+    /* Ajuste da Barra de Progresso */
+    .stProgress > div > div > div > div {
+        background-color: #2563EB;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# AUTENTICAÇÃO E SEGURANÇA DO PAINEL
+# AUTENTICAÇÃO E SEGURANÇA
 # ---------------------------------------------------------
 def verificar_senha():
     SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
@@ -51,24 +163,26 @@ def verificar_senha():
     if st.session_state["autenticado"]:
         return True
 
-    st.markdown('<div class="main-header">🔒 Acesso Restrito</div>', unsafe_allow_html=True)
-    st.markdown("Por favor, introduza a senha de acesso para utilizar a Central de Automação ZUQ.")
+    st.markdown('<div class="hero-title" style="text-align: center; margin-top: 3rem;">🔒 Autenticação Exigida</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-subtitle" style="text-align: center;">Insira a credencial corporativa para acessar o painel de automação.</div>', unsafe_allow_html=True)
 
-    with st.form("form_login"):
-        senha_digitada = st.text_input("Senha do Painel", type="password")
-        btn_login = st.form_submit_button("🔑 Entrar no Painel")
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        with st.form("form_login"):
+            senha_digitada = st.text_input("Chave de Acesso", type="password", placeholder="Sua senha")
+            btn_login = st.form_submit_button("🔑 Entrar no Sistema", use_container_width=True)
 
-        if btn_login:
-            if senha_digitada == SENHA_CORRETA:
-                st.session_state["autenticado"] = True
-                st.rerun()
-            else:
-                st.error("❌ Senha incorreta. Tente novamente.")
-                
+            if btn_login:
+                if senha_digitada == SENHA_CORRETA:
+                    st.session_state["autenticado"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Credencial inválida.")
+                    
     return False
 
 # ---------------------------------------------------------
-# PARSER DE LEITURA (TXT / PDF DO LIVEPOSTO)
+# FUNÇÕES AUXILIARES E LEITOR DE ARQUIVOS (TXT / PDF)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -85,11 +199,9 @@ def limpa_numero(val_str):
         return 0.0
 
 def extrair_dados_txt_ou_pdf(caminho_ou_stream):
-    """Extrai os dados de abastecimento lendo arquivos TXT exportados do Liveposto ou PDFs."""
     registos = []
     lines = []
 
-    # Leitura do conteúdo (Arquivo enviado via Upload)
     if hasattr(caminho_ou_stream, 'name') and caminho_ou_stream.name.lower().endswith('.pdf'):
         try:
             reader = pypdf.PdfReader(caminho_ou_stream)
@@ -109,7 +221,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             with open(caminho_ou_stream, 'r', encoding='latin1', errors='ignore') as f:
                 lines = f.readlines()
 
-    # Processamento por Expressão Regular
     i = 0
     while i < len(lines):
         line = lines[i].strip()
@@ -172,7 +283,7 @@ def fechar_alerta_se_existir(driver, log_container):
         alert = driver.switch_to.alert
         texto = alert.text
         alert.accept()
-        log_container.warning(f"⚠️ Alerta confirmado: {texto}")
+        log_container.warning(f"⚠️ Alerta: {texto}")
         time.sleep(0.8)
         return True
     except:
@@ -184,7 +295,7 @@ def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
         driver.get(url)
     except TimeoutException:
         if log_container:
-            log_container.warning(f"⏳ Tempo limite de {timeout}s atingido em {url}. Interrompendo carregamentos secundários...")
+            log_container.warning(f"⏳ Interrompendo requisições secundárias em {url}...")
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
@@ -201,14 +312,11 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             return func()
         except excecoes_capturadas as e:
             tempo_espera = intervalo_base * (2 ** (tentativa - 1))
-            msg_erro = f"⚠️ Instabilidade/timeout (Tentativa {tentativa}/{max_tentativas}). Aguardando {tempo_espera:.1f}s..."
-            
             if log_container:
-                log_container.warning(msg_erro)
+                log_container.warning(f"⚠️ Retentativa {tentativa}/{max_tentativas}... (Aguardando {tempo_espera:.1f}s)")
             
             if tentativa == max_tentativas:
                 raise e
-            
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
@@ -278,7 +386,6 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 fechar_alerta_se_existir(driver, log_container)
 
             except Exception as e_modal:
-                log_container.warning(f"⚠️ Aviso no filtro por placa: {e_modal}")
                 try:
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
                 except:
@@ -315,7 +422,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                     linhas_duplicadas.append(linha)
 
         if len(linhas_duplicadas) >= 2:
-            log_container.warning(f"🚨 Réplica detectada em {data} ({litros}L). Removendo excedente...")
+            log_container.warning(f"🚨 Duplicata encontrada em {data} ({litros}L). Ajustando...")
             linha_para_remover = linhas_duplicadas[0]
 
             try:
@@ -339,24 +446,23 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 time.sleep(1.2)
 
                 fechar_alerta_se_existir(driver, log_container)
-                log_container.info("✅ Réplica removida com sucesso.")
+                log_container.info("✅ Registro duplicado removido.")
                 time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
                 log_container.error(f"❌ Erro ao remover duplicado: {e_rem}")
 
         elif len(linhas_duplicadas) == 1:
-            log_container.info(f"🔍 Registro já existente em {data} ({litros}L). Pulando...")
+            log_container.info(f"🔍 Abastecimento em {data} ({litros}L) já cadastrado. Ignorando...")
             return True, True, placa
 
     except Exception as e:
-        log_container.warning(f"⚠️ Erro na checagem: {e}")
         fechar_alerta_se_existir(driver, log_container)
 
     return True, False, placa
 
 # ---------------------------------------------------------
-# PROCESSAMENTO PRINCIPAL DE LANÇAMENTO NO ZUQ
+# AUTOMAÇÃO DE LANÇAMENTO
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
@@ -402,7 +508,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     total_registros = len(df)
 
     try:
-        log_container.info("🌐 Conectando ao portal ZUQ...")
+        log_container.info("🌐 Conectando à plataforma ZUQ...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -425,8 +531,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 campo_senha.send_keys(Keys.ENTER)
 
         executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        
-        log_container.info("Autenticando no sistema...")
+        log_container.info("🔐 Autenticação bem-sucedida!")
         time.sleep(3)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
@@ -434,7 +539,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 
         for idx, row in df.iterrows():
             progress = (idx + 1) / total_registros
-            progress_bar.progress(progress, text=f"Abastecimento {idx+1} de {total_registros}")
+            progress_bar.progress(progress, text=f"Processando registro {idx+1} de {total_registros}")
             horario_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L")
@@ -450,13 +555,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                     log_container=log_container
                 )
             except Exception as e_dup:
-                log_container.error(f"❌ Erro ao verificar duplicatas para a placa {row['placa']}: {e_dup}")
+                log_container.error(f"❌ Erro na validação da placa {row['placa']}: {e_dup}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = f"Falha na verificação de duplicados: {str(e_dup)}"
+                df_relatorio.at[idx, 'observacao'] = f"Falha na checagem de duplicados: {str(e_dup)}"
                 continue
 
             if not placa_existe:
@@ -465,7 +570,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada no ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada na frota ZUQ'
                 continue
 
             if ja_cadastrado:
@@ -474,7 +579,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Duplicado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Registro já existente no sistema ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Abastecimento já existente no sistema'
                 continue
 
             def abrir_formulario():
@@ -485,7 +590,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
             try:
                 executar_com_retry(abrir_formulario, max_tentativas=3, log_container=log_container)
             except Exception as e_nav:
-                log_container.error(f"❌ Falha ao carregar formulário para {row['placa']}: {e_nav}")
+                log_container.error(f"❌ Falha ao abrir formulário para {row['placa']}: {e_nav}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
                 
@@ -516,16 +621,16 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
             try:
                 veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
                 if not veiculo_encontrado:
-                    log_container.warning(f"⚠️ Veículo {row['placa']} não localizado nas opções.")
+                    log_container.warning(f"⚠️ Veículo {row['placa']} não listado nas opções.")
                     qtd_ignorados += 1
                     metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
                     
                     df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
                     df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                    df_relatorio.at[idx, 'observacao'] = 'Veículo não localizado nas opções do formulário'
+                    df_relatorio.at[idx, 'observacao'] = 'Veículo não disponível na seleção'
                     continue
             except Exception as e_v:
-                log_container.error(f"Erro na seleção do veículo {row['placa']}: {e_v}")
+                log_container.error(f"Erro na seleção da placa {row['placa']}: {e_v}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
                 
@@ -613,7 +718,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 if salvo:
                     ultima_placa_filtrada = ""
             except Exception as e_save:
-                log_container.error(f"❌ Não foi possível salvar o registro para {row['placa']}: {e_save}")
+                log_container.error(f"❌ Não foi possível salvar registro de {row['placa']}: {e_save}")
                 df_relatorio.at[idx, 'observacao'] = f"Erro no clique de salvar: {str(e_save)}"
 
             time.sleep(1.0)
@@ -625,7 +730,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Sucesso'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso no ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso'
             else:
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados / Duplicados", qtd_ignorados)
@@ -633,71 +738,88 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
                 df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
                 if not df_relatorio.at[idx, 'observacao']:
-                    df_relatorio.at[idx, 'observacao'] = 'Falha no salvamento do formulário'
+                    df_relatorio.at[idx, 'observacao'] = 'Falha ao submeter o formulário'
 
-        log_container.success("🎉 Todos os abastecimentos foram processados!")
+        log_container.success("🎉 Processo concluído com sucesso!")
 
     except Exception as e:
-        log_container.error(f"❌ Erro crítico durante o processamento: {e}")
+        log_container.error(f"❌ Erro crítico no robô: {e}")
     finally:
         driver.quit()
 
     return df_relatorio
 
 # ---------------------------------------------------------
-# FLUXO PRINCIPAL DA APLICAÇÃO STREAMLIT
+# INTERFACE PRINCIPAL
 # ---------------------------------------------------------
 if verificar_senha():
-    st.markdown('<div class="main-header">⛽ Central de Automação ZUQ</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Importe o relatório de abastecimentos (PDF ou TXT) baixado do Liveposto para sincronização automática no ZUQ.</div>', unsafe_allow_html=True)
+    # Cabeçalho da Aplicação
+    st.markdown('<div class="hero-title">Central de Lançamentos ZUQ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-subtitle">Plataforma executiva para automação, validação e auditoria de abastecimentos de frota.</div>', unsafe_allow_html=True)
 
+    # Painel Lateral de Configurações
     with st.sidebar:
-        st.header("⚙️ Configurações do ZUQ")
+        st.markdown("### ⚙️ Parâmetros ZUQ")
         usuario_zuq = st.text_input("Usuário ZUQ", value="manutencaoverdesmares")
         senha_zuq = st.text_input("Senha ZUQ", type="password")
         url_zuq = st.text_input("URL ZUQ", value="https://app.zuq.com.br")
         fornecedor_zuq = st.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
         
         st.divider()
-        modo_visivel = st.checkbox("Exibir Janela do Navegador", value=False, help="Marque se quiser ver a janela abrindo na tela (funciona apenas em testes locais).")
+        modo_visivel = st.checkbox("Modo Janela Visível", value=False, help="Executa o navegador em modo interativo (apenas para ambiente local).")
 
         st.divider()
-        if st.button("🚪 Sair do Painel", use_container_width=True):
+        if st.button("🚪 Encerrar Sessão", use_container_width=True):
             st.session_state["autenticado"] = False
             st.rerun()
 
-    col_upload, col_dashboard = st.columns([1.1, 1])
+    # Conteúdo Principal
+    col_upload, col_dashboard = st.columns([1.1, 1], gap="large")
 
     with col_upload:
-        st.subheader("1. Carregar Relatório (Manual)")
+        st.markdown("""
+            <div class="exec-card">
+                <div class="exec-card-header">📂 1. Importação de Arquivo</div>
+                <p style="font-size: 0.88rem; color: #64748B;">Carregue o relatório de abastecimento gerado no Liveposto (formatos PDF ou TXT).</p>
+            </div>
+        """, unsafe_allow_html=True)
         
-        uploaded_file = st.file_uploader("Selecione o arquivo de abastecimento (PDF ou TXT baixado do Liveposto)", type=["pdf", "txt"])
+        uploaded_file = st.file_uploader("", type=["pdf", "txt"], label_visibility="collapsed")
         dados_df = None
 
         if uploaded_file:
             dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            st.success(f"Ficheiro lido com sucesso! **{len(dados_df)}** abastecimentos identificados.")
+            st.success(f"⚡ **{len(dados_df)}** registros de abastecimento lidos com sucesso.")
 
         if dados_df is not None and not dados_df.empty:
-            with st.expander("👁️ Ver prévia dos abastecimentos lidos"):
-                st.dataframe(dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], use_container_width=True)
+            with st.expander("🔍 Prévia da Tabela de Dados", expanded=True):
+                st.dataframe(
+                    dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], 
+                    use_container_width=True,
+                    height=280
+                )
 
     with col_dashboard:
-        st.subheader("2. Painel de Lançamento ZUQ")
+        st.markdown("""
+            <div class="exec-card">
+                <div class="exec-card-header">📊 2. Indicadores de Execução</div>
+            </div>
+        """, unsafe_allow_html=True)
         
         m1, m2, m3 = st.columns(3)
-        metric_total = m1.metric("Total de Registros", len(dados_df) if dados_df is not None else 0)
-        metric_lancados = m2.metric("Lançados com Sucesso", 0)
-        metric_ignorados = m3.metric("Ignorados / Duplicados", 0)
+        metric_total = m1.metric("Total Identificado", len(dados_df) if dados_df is not None else 0)
+        metric_lancados = m2.metric("Sucesso", 0)
+        metric_ignorados = m3.metric("Ignorados", 0)
 
-        progress_bar = st.progress(0, text="Aguardando início...")
-        log_container = st.container(height=350, border=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        progress_bar = st.progress(0, text="Aguardando comando de início...")
+        log_container = st.container(height=280, border=True)
 
-        if st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True):
+        if st.button("🚀 Iniciar Lançamento Automático", use_container_width=True):
             if dados_df is None or dados_df.empty:
-                st.error("Carregue um arquivo PDF ou TXT primeiro.")
+                st.error("Selecione um arquivo de abastecimentos válido primeiro.")
             elif not senha_zuq:
-                st.error("Informe a senha do ZUQ na barra lateral.")
+                st.error("Informe a senha do sistema ZUQ na barra lateral.")
             else:
                 df_resultado = lancar_no_zuq(
                     dados_df, url_zuq, usuario_zuq, senha_zuq, 
@@ -709,7 +831,7 @@ if verificar_senha():
                     csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
 
                     st.divider()
-                    st.subheader("📋 Relatório Final de Auditoria")
+                    st.markdown("### 📋 Relatório Consolidado de Auditoria")
                     
                     st.dataframe(
                         df_resultado[['placa', 'data', 'quantidade', 'status_lancamento', 'observacao']], 
@@ -717,9 +839,9 @@ if verificar_senha():
                     )
 
                     st.download_button(
-                        label="📥 Baixar Relatório de Processamento (CSV)",
+                        label="📥 Download do Relatório Final (CSV)",
                         data=csv_data,
-                        file_name=f"relatorio_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"relatorio_executivo_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv",
                         use_container_width=True
                     )
