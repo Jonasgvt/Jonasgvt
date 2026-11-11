@@ -7,6 +7,7 @@ import traceback
 from datetime import datetime
 import pandas as pd
 import pypdf
+import requests
 import streamlit as st
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -330,7 +331,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
             driver.switch_to.default_content()
             
-            # Se os botões já estiverem na raiz
             if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar']"):
                 return True
 
@@ -433,13 +433,12 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             
         time.sleep(1)
 
-        # 6. DISPARO GARANTIDO DO BOTÃO VISUALIZAR
+        # 6. DISPARO E CAPTURA DO POPUP PDF
         if log_container:
             log_container.info("🖨️ Disparando a geração do arquivo PDF...")
 
-        janelas_antes = driver.window_handles
+        janelas_antes = set(driver.window_handles)
 
-        # Varredura completa para acionar o botão de impressão no frame ativo
         def clicar_visualizar():
             script_clique = """
                 var btn = document.querySelector("#Img_Visualizar") ||
@@ -452,11 +451,9 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 return false;
             """
             
-            # Tenta no frame atual
             if driver.execute_script(script_clique):
                 return True
 
-            # Tenta em todos os frames caso o contexto tenha sido perdido
             frames = driver.find_elements(By.TAG_NAME, "iframe")
             for f in frames:
                 try:
@@ -478,22 +475,46 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         time.sleep(5)
 
-        janelas_depois = driver.window_handles
-        if len(janelas_depois) > len(janelas_antes):
-            driver.switch_to.window(janelas_depois[-1])
+        # 7. TRATAMENTO DA NOVA ABA/JANELA DO POPUP PDF
+        janelas_depois = set(driver.window_handles)
+        novas_janelas = janelas_depois - janelas_antes
+
+        url_pdf_popup = None
+
+        if novas_janelas:
+            driver.switch_to.window(list(novas_janelas)[0])
             time.sleep(2)
+            url_pdf_popup = driver.current_url
 
         if log_container:
-            log_container.info("📥 Baixando arquivo PDF gerado...")
+            log_container.info("📥 Baixando arquivo PDF do pop-up gerado...")
 
-        # CAPTURA DO PDF NA PASTA TEMPORÁRIA
         caminho_pdf_baixado = None
-        for _ in range(35):
-            time.sleep(1)
-            arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
-            if arquivos:
-                caminho_pdf_baixado = arquivos[0]
-                break
+
+        # Estratégia 1: Baixar via requisição HTTP direta da URL do PDF no Pop-up
+        if url_pdf_popup and ".pdf" in url_pdf_popup.lower():
+            try:
+                cookies = {cookie['name']: cookie['value'] for cookie in driver.get_cookies()}
+                headers = {"User-Agent": driver.execute_script("return navigator.userAgent;")}
+                
+                resposta = requests.get(url_pdf_popup, cookies=cookies, headers=headers, timeout=30)
+                if resposta.status_code == 200:
+                    caminho_dest = os.path.join(download_dir, "relatorio_liveposto.pdf")
+                    with open(caminho_dest, "wb") as f:
+                        f.write(resposta.content)
+                    caminho_pdf_baixado = caminho_dest
+            except Exception as e_http:
+                if log_container:
+                    log_container.warning(f"⚠️ Erro ao baixar por URL direta: {e_http}")
+
+        # Estratégia 2: Varredura de download da pasta temporária
+        if not caminho_pdf_baixado:
+            for _ in range(30):
+                time.sleep(1)
+                arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
+                if arquivos:
+                    caminho_pdf_baixado = arquivos[0]
+                    break
 
         return caminho_pdf_baixado
 
