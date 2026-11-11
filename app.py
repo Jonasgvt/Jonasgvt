@@ -3,7 +3,7 @@ import re
 import glob
 import time
 import tempfile
-import io
+import traceback
 from datetime import datetime
 import pandas as pd
 import pypdf
@@ -141,13 +141,13 @@ def fechar_alerta_se_existir(driver, log_container):
     except:
         return False
 
-def navegar_com_timeout_seguro(driver, url, timeout=12, log_container=None):
+def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
     driver.set_page_load_timeout(timeout)
     try:
         driver.get(url)
     except TimeoutException:
         if log_container:
-            log_container.warning(f"⏳ Tempo limite de {timeout}s atingido em {url}. Interrompendo carregamentos...")
+            log_container.warning(f"⏳ Tempo limite de {timeout}s atingido em {url}. Interrompendo carregamentos secundários...")
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
@@ -175,19 +175,25 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (ROBUSTA & SEM IDs DINÂMICOS)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (ROBUSTA & JS ENFORCED)
 # ---------------------------------------------------------
+def preencher_campo_js(driver, elemento, valor):
+    driver.execute_script("""
+        arguments[0].value = arguments[1];
+        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+    """, elemento, valor)
+
 def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_container=None):
     download_dir = tempfile.mkdtemp()
 
     options = webdriver.ChromeOptions()
-    options.page_load_strategy = 'eager'
+    options.page_load_strategy = 'normal'
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-features=VizDisplayCompositor")
-    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--window-size=1920,1080")
 
     prefs = {
@@ -212,104 +218,114 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    driver.set_page_load_timeout(25)
-    wait = WebDriverWait(driver, 20)
+    driver.set_page_load_timeout(30)
+    wait = WebDriverWait(driver, 25)
 
     try:
         if log_container:
             log_container.info("🌐 Conectando ao portal Liveposto...")
 
         driver.get("https://posto.liveposto.com.br/")
-        time.sleep(2)
+        time.sleep(4)  # Aguarda carregamento do JS da framework Webrun
         
-        # 1. TELA DE LOGIN (Busca pelos containers fixos do Webrun)
-        # Campo Empresa (#Empresa)
-        campo_empresa = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[@id='Empresa']//input | //label[contains(text(),'Empresa')]/following::input[1] | (//input[@type='text'])[1]"
-        )))
-        campo_empresa.click()
-        campo_empresa.send_keys(Keys.CONTROL + "a")
-        campo_empresa.send_keys(Keys.BACKSPACE)
-        digitar_devagar(campo_empresa, empresa, atraso=0.03)
+        if log_container:
+            log_container.info("✍️ Preenchendo credenciais no Liveposto...")
 
-        # Campo Usuário (#Usuario ou #Login)
-        campo_user = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[@id='Usuario' or @id='Login']//input | //label[contains(text(),'Usuário')]/following::input[1] | (//input[@type='text'])[2]"
+        # 1. AUTENTICAÇÃO (Preenchimento misto Native + JS para máxima compatibilidade)
+        # Campo Empresa
+        campo_empresa = wait.until(EC.presence_of_element_located((
+            By.XPATH, "//input[contains(@id,'WFRInput') or @name='Empresa' or @id='Empresa'] | (//input[@type='text'])[1]"
         )))
-        campo_user.click()
-        campo_user.send_keys(Keys.CONTROL + "a")
-        campo_user.send_keys(Keys.BACKSPACE)
-        digitar_devagar(campo_user, usuario, atraso=0.03)
+        preencher_campo_js(driver, campo_empresa, empresa)
+        campo_empresa.send_keys(Keys.TAB)
+        time.sleep(0.5)
 
-        # Campo Senha (#Senha)
-        campo_pass = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[@id='Senha']//input | //label[contains(text(),'Senha')]/following::input[1] | //input[@type='password']"
-        )))
-        campo_pass.click()
-        campo_pass.send_keys(Keys.CONTROL + "a")
-        campo_pass.send_keys(Keys.BACKSPACE)
-        digitar_devagar(campo_pass, senha, atraso=0.03)
+        # Campo Usuário
+        inputs_texto = driver.find_elements(By.XPATH, "//input[@type='text']")
+        campo_user = inputs_texto[1] if len(inputs_texto) > 1 else inputs_texto[0]
+        preencher_campo_js(driver, campo_user, usuario)
+        campo_user.send_keys(Keys.TAB)
+        time.sleep(0.5)
 
-        # Botão Entrar (#btnLogin)
+        # Campo Senha
+        campo_pass = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='password']")))
+        preencher_campo_js(driver, campo_pass, senha)
+        time.sleep(0.5)
+
+        # Submeter formulário de login
+        if log_container:
+            log_container.info("🔑 Submetendo login...")
+
         try:
-            btn_entrar = driver.find_element(By.XPATH, "//*[@id='btnLogin'] | //button[contains(.,'Entrar')] | //*[contains(@class,'btn-login')]")
-            btn_entrar.click()
-        except NoSuchElementException:
+            btn_entrar = driver.find_element(By.XPATH, "//*[@id='btnLogin']//button | //*[@id='btnLogin'] | //button[contains(.,'Entrar')]")
+            driver.execute_script("arguments[0].click();", btn_entrar)
+        except Exception:
             campo_pass.send_keys(Keys.ENTER)
 
-        time.sleep(4)
+        time.sleep(5)
+
+        # 2. NAVEGAÇÃO PARA O RELATÓRIO
         if log_container:
-            log_container.info("🔑 Autenticado! Acessando o relatório 'Vendas por Veículo'...")
+            log_container.info("📂 Navegando para a emissão de relatórios...")
 
-        # 2. SELEÇÃO DO MENU LATERAL
         menu_relatorio = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[contains(text(),'Vendas por Veículo')] | //*[@webrun-menu-action-type='form' and contains(.,'500000556')] | //span[contains(text(),'Rel.')]"
+            By.XPATH, "//*[contains(text(),'Vendas por Veículo')] | //*[@webrun-menu-action-type='form'] | //span[contains(text(),'Rel.')]"
         )))
-        menu_relatorio.click()
-        time.sleep(3)
+        driver.execute_script("arguments[0].click();", menu_relatorio)
+        time.sleep(4)
 
-        # Trata iFrames do Webrun caso a janela abra englobada
+        # Troca para iframe caso o Webrun carregue a modal encapsulada
+        if len(driver.window_handles) > 1:
+            driver.switch_to.window(driver.window_handles[-1])
+
         frames = driver.find_elements(By.TAG_NAME, "iframe")
         if frames:
             driver.switch_to.frame(frames[-1])
 
-        # 3. PREENCHIMENTO DAS DATAS NA JANELA MODAL
+        # 3. PREENCHIMENTO DO PERÍODO
         if log_container:
-            log_container.info("📅 Preenchendo o período inicial e final...")
+            log_container.info("📅 Configurando período de consulta...")
 
-        campo_dt_inicio = wait.until(EC.presence_of_element_located((
-            By.XPATH, "//label[contains(text(),'Período Inicial') or contains(text(),'Inicial')]/following::input[1]"
-        )))
-        campo_dt_inicio.click()
-        campo_dt_inicio.send_keys(Keys.CONTROL + "a")
-        campo_dt_inicio.send_keys(Keys.BACKSPACE)
-        digitar_devagar(campo_dt_inicio, data_inicio, atraso=0.04)
+        inputs_modal = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//input[@type='text']")))
+        
+        # Encontra os campos de data no modal
+        campo_dt_inicio = None
+        campo_dt_fim = None
+        for inp in inputs_modal:
+            val = inp.get_attribute("value") or ""
+            placeholder = inp.get_attribute("placeholder") or ""
+            if "/" in val or "01" in val or "inicio" in inp.get_attribute("id").lower() or "inicial" in placeholder.lower():
+                if not campo_dt_inicio:
+                    campo_dt_inicio = inp
+                else:
+                    campo_dt_fim = inp
 
-        campo_dt_fim = wait.until(EC.presence_of_element_located((
-            By.XPATH, "//label[contains(text(),'Período Final') or contains(text(),'Final')]/following::input[1]"
-        )))
-        campo_dt_fim.click()
-        campo_dt_fim.send_keys(Keys.CONTROL + "a")
-        campo_dt_fim.send_keys(Keys.BACKSPACE)
-        digitar_devagar(campo_dt_fim, data_fim, atraso=0.04)
+        if not campo_dt_inicio or not campo_dt_fim:
+            # Fallback para os dois últimos inputs visíveis no modal
+            campo_dt_inicio = inputs_modal[-2]
+            campo_dt_fim = inputs_modal[-1]
 
+        preencher_campo_js(driver, campo_dt_inicio, data_inicio)
+        preencher_campo_js(driver, campo_dt_fim, data_fim)
         time.sleep(1)
 
-        # 4. CLIQUE NO BOTÃO VISUALIZAR
+        # 4. SOLICITAR RELATÓRIO PDF
         if log_container:
-            log_container.info("🖨️ Solicitando a geração do PDF...")
+            log_container.info("🖨️ Gerando relatório PDF...")
 
-        btn_visualizar = wait.until(EC.element_to_be_clickable((
-            By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(@bs-title,'Visualizar')] | //button[contains(.,'Visualizar')] | //span[contains(text(),'Visualizar')]/ancestor::button"
-        )))
-        btn_visualizar.click()
+        try:
+            btn_visualizar = driver.find_element(By.XPATH, "//*[@id='Img_Visualizar'] | //*[contains(@bs-title,'Visualizar')] | //button[contains(.,'Visualizar')]")
+            driver.execute_script("arguments[0].click();", btn_visualizar)
+        except Exception:
+            btn_visualizar = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'Visualizar')] | //span[contains(text(),'Visualizar')]")))
+            driver.execute_script("arguments[0].click();", btn_visualizar)
 
         if log_container:
-            log_container.info("📥 Aguardando download do relatório PDF...")
+            log_container.info("📥 Aguardando conclusão do download...")
 
-        # 5. AGUARDAR O ARQUIVO SALVAR
+        # 5. AGUARDAR DOWNLOAD
         caminho_pdf_baixado = None
-        for _ in range(25):
+        for _ in range(30):
             time.sleep(1)
             arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
             if arquivos:
@@ -319,8 +335,10 @@ def baixar_pdf_liveposto(empresa, usuario, senha, data_inicio, data_fim, log_con
         return caminho_pdf_baixado
 
     except Exception as e:
+        erro_detalhado = traceback.format_exc()
         if log_container:
             log_container.error(f"❌ Erro ao interagir com o Liveposto: {e}")
+            log_container.code(erro_detalhado)
         return None
     finally:
         driver.quit()
