@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER RIGOROSO DE EXTRAÇÃO (PREÇO, LITROS, KM)
+# PARSER EXTRAÇÃO RIGOROSA DO LIVEPOSTO
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -263,7 +263,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            # Captura de KM Atual (ex: 163.179 ou 163179)
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
@@ -281,7 +280,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 if "Total da Placa:" in sub_line or (j > i + 1 and re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line)):
                     break
 
-                # Captura na Linha do Produto DIESEL
                 if "DIESEL" in sub_line.upper():
                     produto_nome = "DIESEL B S10 ADITIVADO"
                     
@@ -293,9 +291,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                     valor_total = "0,00"
 
                     if len(nums_validos) >= 2:
-                        # 1º número com decimal na linha do DIESEL = Valor Unitário (ex: 7,600)
                         vlr_unit = nums_validos[0]
-                        # 2º número com decimal na linha do DIESEL = Quantidade Litros (ex: 156,100)
                         quantidade = nums_validos[1]
                         if len(nums_validos) >= 3:
                             valor_total = nums_validos[2]
@@ -394,7 +390,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ
+# CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ (PREÇO + LITROS + KM)
 # ---------------------------------------------------------
 def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros, preco, cupom, hora, FORNECEDOR, ultima_placa_filtrada, log_container):
     try:
@@ -496,12 +492,18 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         if linha_encontrada:
             texto_linha = linha_encontrada.text
-            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando divergências...")
+            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando se há divergência em KM, Preço ou Volume...")
 
+            # Análise de divergência estrita
             km_no_zuq = target_km in re.sub(r'\D', '', texto_linha) if target_km else True
+            
+            # Formatos de preço em reais (ex: R$7,60 ou R$ 7,60)
+            preco_formatado = f"{target_preco:.2f}".replace('.', ',') if target_preco > 0 else ""
+            preco_no_zuq = (preco_formatado in texto_linha) or any(abs(limpa_numero(td.text) - target_preco) < 0.05 for td in linha_encontrada.find_elements(By.TAG_NAME, "td") if limpa_numero(td.text) > 0) if target_preco > 0 else True
 
-            if not km_no_zuq or "0,00" in texto_linha or "0.00" in texto_linha:
-                log_container.warning(f"✏️ Corrigindo registro no ZUQ para a placa {placa}...")
+            # Se houver qualquer divergência no Preço, KM ou Volume, abre para EDITAR
+            if (not km_no_zuq) or (not preco_no_zuq) or "0,00" in texto_linha or "0.00" in texto_linha:
+                log_container.warning(f"✏️ Divergência de valores/KM detectada na placa {placa}. Editando no ZUQ...")
 
                 try:
                     link_registro = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
@@ -519,23 +521,28 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                     log_container.error(f"❌ Não foi possível abrir edição: {e_ed}")
                     return True, "Erro ao abrir edição", placa
 
-                if km and km != "0":
-                    try:
-                        campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
-                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, km)
-                        log_container.info(f"✏️ KM ajustado para: {km}")
-                    except Exception: pass
-
-                if target_litros > 0:
-                    try:
-                        campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
-                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, litros)
-                    except Exception: pass
-
+                # 1. Atualiza Preço Unitário
                 if target_preco > 0:
                     try:
                         campo_preco = driver.find_element(By.NAME, "price")
                         driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, preco)
+                        log_container.info(f"✏️ Preço Unitário corrigido para R$ {preco}")
+                    except Exception: pass
+
+                # 2. Atualiza Litros
+                if target_litros > 0:
+                    try:
+                        campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
+                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, litros)
+                        log_container.info(f"✏️ Volume corrigido para {litros} L")
+                    except Exception: pass
+
+                # 3. Atualiza KM
+                if km and km != "0":
+                    try:
+                        campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
+                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, km)
+                        log_container.info(f"✏️ KM corrigido para {km}")
                     except Exception: pass
 
                 for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
@@ -547,8 +554,8 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                     except Exception: 
                         continue
 
-                log_container.success(f"✅ Registro no ZUQ atualizado para {placa}!")
-                return True, "Atualizado no ZUQ (Editado)", placa
+                log_container.success(f"✅ Preço/Litros/KM atualizados no ZUQ para {placa}!")
+                return True, "Preço e Dados Corrigidos no ZUQ", placa
             else:
                 log_container.info(f"✅ Registro no ZUQ já está 100% correto.")
                 return True, "Já Cadastrado (Sem divergência)", placa
@@ -855,7 +862,7 @@ if verificar_senha():
             st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
 
         if "dados_df" in st.session_state and st.session_state["dados_df"] is not None:
-            st.info("💡 **Conciliação Ativa**: Registros existentes no ZUQ com KM ou valores divergentes serão **editados e corrigidos automaticamente** pelo robô.")
+            st.info("💡 **Conciliação Ativa**: Registros existentes no ZUQ com KM, Preço Unitário ou Litros divergentes serão **editados e corrigidos automaticamente** pelo robô.")
 
             # Tabela Interativa
             df_editado = st.data_editor(
