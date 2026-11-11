@@ -253,6 +253,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
     except Exception:
         driver = webdriver.Chrome(options=options)
 
+    # CDP Habilitado de forma global para downloads em headless
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -392,17 +393,14 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
                                 selectExp.options[i].text.toUpperCase().includes("TXT")) {
                                 selectExp.selectedIndex = i;
                                 selectExp.dispatchEvent(new Event('change', { bubbles: true }));
-                                return true;
+                                break;
                             }
                         }
                     }
                 }
-                return false;
             """
-            if not driver.execute_script(script_exportacao):
-                selects = driver.find_elements(By.XPATH, "//div[@webrun-id='TIPO_EXPORTACAO']//select")
-                if selects:
-                    Select(selects[0]).select_by_visible_text("TEXTO")
+            driver.execute_script(script_exportacao)
+            time.sleep(1)
         except Exception as e_exp:
             if log_container:
                 log_container.warning(f"⚠️ Aviso ao selecionar tipo de exportação: {e_exp}")
@@ -435,17 +433,35 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
         if log_container:
             log_container.info("🖨️ Disparando a exportação direta do relatório...")
 
-        script_clique_direto = """
+        # Disparo Duplo do Botão e Rotinas Nativas do Webrun
+        script_clique_completo = """
+            var disparou = false;
+            
+            // 1. Tenta acionar botão nativo do Webrun
+            if (typeof ebfFormPreview === 'function') {
+                ebfFormPreview();
+                disparou = true;
+            }
+            if (typeof ebfReportExport === 'function') {
+                ebfReportExport('TXT');
+                disparou = true;
+            }
+            
+            // 2. Dispara evento de clique diretamente no DOM
             var btn = document.querySelector("#Img_Visualizar") || 
                       document.querySelector("[id*='Visualizar']") ||
-                      Array.from(document.querySelectorAll("button, a, div")).find(e => (e.textContent || '').includes("Visualizar"));
+                      Array.from(document.querySelectorAll("button, a, div, img, span")).find(e => (e.textContent || e.title || e.alt || '').includes("Visualizar"));
+            
             if (btn) {
-                btn.click();
-                return true;
+                var evt = document.createEvent("MouseEvents");
+                evt.initEvent("click", true, true);
+                btn.dispatchEvent(evt);
+                disparou = true;
             }
-            return false;
+
+            return disparou;
         """
-        driver.execute_script(script_clique_direto)
+        driver.execute_script(script_clique_completo)
 
         if log_container:
             log_container.info("⏳ Aguardando a gravação do arquivo no disco...")
