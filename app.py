@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER E EXTRATOR DO LIVEPOSTO
+# PARSER CORRIGIDO (DIFERENCIA CUPOM DE KM)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -257,14 +257,24 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             if len(partes_dt[2]) == 2:
                 dt_str = f"{partes_dt[0]}/{partes_dt[1]}/20{partes_dt[2]}"
 
+            # O número de 6 dígitos no início da linha é SEMPRE o Cupom
             m_cupom = re.search(r'\b(\d{5,7})\b', line)
             cupom = m_cupom.group(1) if m_cupom else "0"
 
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            m_km = re.search(r'(\d{2,3}\.\d{3}|\d{5,6})', line)
-            km = m_km.group(1).replace('.', '') if m_km else ""
+            # O KM real no Liveposto vem no formato com ponto (ex: 21.940 ou 126.560) ou é o número de odômetro após o total
+            km = ""
+            m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
+            if m_km_ponto:
+                km = m_km_ponto.group(1).replace('.', '')
+            else:
+                # Procura numéricos inteiros maiores que o cupom para isolar o KM
+                nums_linha = re.findall(r'\b(\d{5,6})\b', line)
+                nums_filtrados = [n for n in nums_linha if n != cupom]
+                if nums_filtrados:
+                    km = nums_filtrados[0]
 
             j = i + 1
             while j < len(lines):
@@ -335,28 +345,24 @@ def auditar_e_validar_dados(df):
     for idx, row in df.iterrows():
         alertas = []
 
-        # 1. Validação de KM / Odômetro
         km_val = limpa_numero(row['km'])
         if km_val == 0:
             alertas.append("⚠️ Odômetro Zerado/Ausente")
         elif km_val < 1000:
             alertas.append(f"⚠️ KM atípico ({row['km']})")
 
-        # 2. Validação de Preço por Litro
         preco_val = limpa_numero(row['valor_unitario'])
         if preco_val == 0:
             alertas.append("❌ Preço por litro zerado")
         elif preco_val < 4.00 or preco_val > 9.50:
-            alertas.append(f"⚠️ Preço por litro atípico (R$ {row['valor_unitario']})")
+            alertas.append(f"⚠️ Preço atípico (R$ {row['valor_unitario']})")
 
-        # 3. Validação de Quantidade (Litros)
         litros_val = limpa_numero(row['quantidade'])
         if litros_val == 0:
-            alertas.append("❌ Quantidade de litros zerada")
+            alertas.append("❌ Litros zerados")
 
-        # 4. Validação de Placa (Formato Mercosul ou Antigo)
         if not re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', row['placa']):
-            alertas.append("⚠️ Formato de placa suspeito")
+            alertas.append("⚠️ Placa suspeita")
 
         if alertas:
             df.at[idx, 'divergencia'] = True
@@ -408,7 +414,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# CHECAGEM DE DUPLICATAS E AUDITORIA ZUQ
+# CHECAGEM DE DUPLICATAS NO ZUQ
 # ---------------------------------------------------------
 def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litros, preco, ultima_placa_filtrada, log_container):
     try:
@@ -450,7 +456,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
                 
                 if not opcoes:
-                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no cadastro ZUQ!")
+                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no ZUQ!")
                     btn_cancelar = driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]")
                     btn_cancelar.click()
                     time.sleep(0.8)
@@ -534,14 +540,14 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 time.sleep(1.2)
 
                 fechar_alerta_se_existir(driver, log_container)
-                log_container.info("✅ Registro excedente removido.")
+                log_container.info("✅ Registro removido.")
                 time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
                 log_container.error(f"❌ Erro ao remover duplicata: {e_rem}")
 
         elif len(linhas_duplicadas) == 1:
-            log_container.info(f"🔍 Registro {data} ({litros}L) já existe no ZUQ. Ignorando...")
+            log_container.info(f"🔍 Registro {data} ({litros}L) já existe. Pulando...")
             return True, True, placa
 
     except Exception:
@@ -550,7 +556,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
     return True, False, placa
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE LANÇAMENTO
+# AUTOMAÇÃO DE LANÇAMENTO ZUQ
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
@@ -590,7 +596,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
     total_registros = len(df)
 
     try:
-        log_container.info("🌐 Conectando à instância ZUQ...")
+        log_container.info("🌐 Conectando ao ZUQ...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -613,7 +619,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 campo_senha.send_keys(Keys.ENTER)
 
         executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        log_container.info("🔐 Autenticação concluída com sucesso.")
+        log_container.info("🔐 Autenticação efetuada com sucesso.")
         time.sleep(3)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
@@ -650,9 +656,9 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
-                df_relatorio.at[idx, 'status_lancamento'] = 'Divergência / Ignorado'
+                df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada no ZUQ'
+                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada'
                 continue
 
             if ja_cadastrado:
@@ -782,7 +788,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
                         erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
                         if erros_km and erros_km[0].is_displayed():
-                            log_container.warning(f"⚠️ Conflito no Odômetro ({row['km']} KM). Limpando para salvar...")
+                            log_container.warning(f"⚠️ Conflito de Odômetro ({row['km']} KM). Corrigindo automaticamente...")
                             campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                             driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
                             time.sleep(0.5)
@@ -822,7 +828,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 if not df_relatorio.at[idx, 'observacao']:
                     df_relatorio.at[idx, 'observacao'] = 'Falha ao salvar'
 
-        log_container.success("🎉 Processamento e auditoria concluídos!")
+        log_container.success("🎉 Processamento concluído!")
 
     except Exception as e:
         log_container.error(f"❌ Erro crítico: {e}")
@@ -862,9 +868,9 @@ if verificar_senha():
             
             qtd_div = len(dados_df[dados_df['divergencia'] == True])
             if qtd_div > 0:
-                st.warning(f"⚠️ **{len(dados_df)}** registros lidos, sendo **{qtd_div}** com alertas de divergência.")
+                st.warning(f"⚠️ **{len(dados_df)}** registros lidos, sendo **{qtd_div}** com alertas de auditoria.")
             else:
-                st.success(f"✅ **{len(dados_df)}** abastecimentos auditados e 100% integrantes.")
+                st.success(f"✅ **{len(dados_df)}** abastecimentos auditados e validados.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 👁️ Painel de Pré-Auditoria")
