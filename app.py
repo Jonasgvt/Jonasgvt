@@ -92,7 +92,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
     registos = []
     lines = []
 
-    # 1. Leitura do conteúdo (Suporta caminho em disco ou Stream de upload)
+    # 1. Leitura do conteúdo
     if isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
         if caminho_ou_stream.lower().endswith('.pdf'):
             reader = pypdf.PdfReader(caminho_ou_stream)
@@ -110,7 +110,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             caminho_ou_stream.seek(0)
             lines = [l.decode('latin1', errors='ignore') for l in caminho_ou_stream.readlines()]
 
-    # 2. Processamento por Expressão Regular ajustada para TXT do Liveposto
+    # 2. Processamento por Expressão Regular
     i = 0
     while i < len(lines):
         line = lines[i].strip()
@@ -120,19 +120,15 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
         if m_data:
             dt_str, hr_raw, cupom_raw, resto_linha = m_data.groups()
             
-            # Normalização do ano na data (ex: 09/11/20 -> 09/11/2026)
             partes_dt = dt_str.split('/')
             if len(partes_dt[2]) == 2:
                 dt_str = f"{partes_dt[0]}/{partes_dt[1]}/20{partes_dt[2]}"
 
-            # Captura a Placa (ex: MVJ-9C0, ORJ-892, RGS-7G4)
             m_placa = re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', resto_linha)
             placa = m_placa.group(1).replace('-', '') if m_placa else ""
 
-            # Próxima linha contém o Produto e Preço Unitário
             nxt_line = lines[i+1].strip() if i+1 < len(lines) else ""
             
-            # Captura de Valores Numéricos (Quantidade, Unitário, Total Líquido)
             numeros_nxt = re.findall(r'(\d+(?:[\.,]\d+)?)', nxt_line)
             numeros_linha = re.findall(r'(\d+(?:[\.,]\d+)?)', resto_linha)
 
@@ -153,7 +149,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 if len(numeros_linha) >= 2:
                     valor_total = numeros_linha[1]
 
-            # Captura do Odômetro (KM Atual)
             m_km = re.search(r'(\d{2,3}\.\d{3}|\d{5,6})', resto_linha)
             if m_km:
                 km = m_km.group(1).replace('.', '')
@@ -219,7 +214,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (TEXTO / DIRECT)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -243,7 +238,8 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
     prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
-        "download.directory_upgrade": True
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -261,7 +257,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # CDP para liberar downloads irrestritos em Headless
+    # CDP para permitir downloads em Headless
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -370,11 +366,8 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(5)
 
-        # 3. INTERAÇÃO COM O MODAL WEBRUN
+        # 3. INTERAÇÃO NO MODAL WEBRUN
         def alternar_para_frame_do_modal():
-            if len(driver.window_handles) > 1:
-                driver.switch_to.window(driver.window_handles[-1])
-
             driver.switch_to.default_content()
             
             if driver.find_elements(By.XPATH, "//*[@webrun-id='TIPO_EXPORTACAO'] | //*[contains(text(),'Visualizar')]"):
@@ -448,30 +441,32 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(1.5)
 
-        # 6. CLIQUE NO BOTÃO VISUALIZAR PARA DISPARAR DOWNLOAD DIRETO DO TXT
+        # 6. DISPARO DO BOTÃO VISUALIZAR
         if log_container:
             log_container.info("🖨️ Disparando a exportação direta do relatório...")
 
-        script_clique_vis = """
+        script_clique_direto = """
             var btn = document.querySelector("#Img_Visualizar") || 
                       document.querySelector("[id*='Visualizar']") ||
-                      Array.from(document.querySelectorAll("button, a, div")).find(e => e.textContent.includes("Visualizar"));
+                      Array.from(document.querySelectorAll("button, a, div")).find(e => (e.textContent || '').includes("Visualizar"));
             if (btn) {
                 btn.click();
                 return true;
             }
             return false;
         """
-        driver.execute_script(script_clique_vis)
+        driver.execute_script(script_clique_direto)
 
         if log_container:
-            log_container.info("⏳ Aguardando o download direto do arquivo...")
+            log_container.info("⏳ Aguardando a gravação do arquivo no disco...")
 
-        # 7. CAPTURA DO ARQUIVO NA PASTA TEMPORÁRIA
+        # 7. AGUARDO DO ARQUIVO NA PASTA DE DOWNLOADS (Até 60s)
         caminho_arquivo_baixado = None
-        for _ in range(30):
+        for _ in range(60):
             time.sleep(1)
-            arquivos = glob.glob(os.path.join(download_dir, "*.*"))
+            arquivos = glob.glob(os.path.join(download_dir, "*"))
+            
+            # Filtra arquivos temporários de download do Chrome
             validos = [f for f in arquivos if not f.endswith('.crdownload') and not f.endswith('.tmp')]
             if validos:
                 caminho_arquivo_baixado = validos[0]
