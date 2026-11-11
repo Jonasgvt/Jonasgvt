@@ -1,10 +1,7 @@
 import os
 import re
-import glob
 import time
-import tempfile
 import traceback
-import requests
 from datetime import datetime
 import pandas as pd
 import pypdf
@@ -13,7 +10,6 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
@@ -72,7 +68,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# FUNÇÕES AUXILIARES E PARSER DE ARQUIVO (TXT / PDF)
+# PARSER DE LEITURA (TXT / PDF DO LIVEPOSTO)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -89,10 +85,22 @@ def limpa_numero(val_str):
         return 0.0
 
 def extrair_dados_txt_ou_pdf(caminho_ou_stream):
+    """Extrai os dados de abastecimento lendo arquivos TXT exportados do Liveposto ou PDFs."""
     registos = []
     lines = []
 
-    if isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
+    # Leitura do conteúdo (Arquivo enviado via Upload)
+    if hasattr(caminho_ou_stream, 'name') and caminho_ou_stream.name.lower().endswith('.pdf'):
+        try:
+            reader = pypdf.PdfReader(caminho_ou_stream)
+            for page in reader.pages:
+                lines.extend(page.extract_text().split('\n'))
+        except Exception:
+            pass
+    elif hasattr(caminho_ou_stream, 'read'):
+        caminho_ou_stream.seek(0)
+        lines = [l.decode('latin1', errors='ignore') for l in caminho_ou_stream.readlines()]
+    elif isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
         if caminho_ou_stream.lower().endswith('.pdf'):
             reader = pypdf.PdfReader(caminho_ou_stream)
             for page in reader.pages:
@@ -100,15 +108,8 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
         else:
             with open(caminho_ou_stream, 'r', encoding='latin1', errors='ignore') as f:
                 lines = f.readlines()
-    elif hasattr(caminho_ou_stream, 'read'):
-        try:
-            reader = pypdf.PdfReader(caminho_ou_stream)
-            for page in reader.pages:
-                lines.extend(page.extract_text().split('\n'))
-        except Exception:
-            caminho_ou_stream.seek(0)
-            lines = [l.decode('latin1', errors='ignore') for l in caminho_ou_stream.readlines()]
 
+    # Processamento por Expressão Regular
     i = 0
     while i < len(lines):
         line = lines[i].strip()
@@ -209,301 +210,6 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
                 raise e
             
             time.sleep(tempo_espera)
-
-# ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO
-# ---------------------------------------------------------
-def preencher_campo_js(driver, elemento, valor):
-    driver.execute_script("""
-        arguments[0].value = arguments[1];
-        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-    """, elemento, valor)
-
-def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha, data_inicio, data_fim, log_container=None):
-    download_dir = tempfile.mkdtemp()
-
-    options = webdriver.ChromeOptions()
-    options.page_load_strategy = 'normal'
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-
-    prefs = {
-        "download.default_directory": download_dir,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
-        "profile.default_content_setting_values.automatic_downloads": 1
-    }
-    options.add_experimental_option("prefs", prefs)
-
-    if os.path.exists("/usr/bin/chromium"):
-        options.binary_location = "/usr/bin/chromium"
-        service = Service("/usr/bin/chromedriver")
-    elif os.path.exists("/usr/bin/chromium-browser"):
-        options.binary_location = "/usr/bin/chromium-browser"
-        service = Service("/usr/bin/chromedriver")
-    else:
-        service = Service(ChromeDriverManager().install())
-
-    try:
-        driver = webdriver.Chrome(service=service, options=options)
-    except Exception:
-        driver = webdriver.Chrome(options=options)
-
-    # CDP Global para forçar o salvamento em disco
-    driver.execute_cdp_cmd("Page.setDownloadBehavior", {
-        "behavior": "allow",
-        "downloadPath": download_dir
-    })
-
-    driver.set_page_load_timeout(40)
-    wait = WebDriverWait(driver, 20)
-
-    try:
-        if log_container:
-            log_container.info("🌐 Conectando ao portal Liveposto...")
-
-        driver.get("https://posto.liveposto.com.br/")
-        time.sleep(5)
-
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        if iframes:
-            driver.switch_to.frame(iframes[0])
-
-        if log_container:
-            log_container.info("✍️ Preenchendo credenciais...")
-
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "input")))
-
-        inputs_texto = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
-        inputs_senha = driver.find_elements(By.XPATH, "//input[@type='password']")
-
-        if len(inputs_texto) >= 2:
-            campo_empresa = inputs_texto[0]
-            campo_user = inputs_texto[1]
-        elif len(inputs_texto) == 1:
-            campo_empresa = inputs_texto[0]
-            campo_user = inputs_texto[0]
-        else:
-            raise Exception("Formulário de autenticação não encontrado.")
-
-        campo_pass = inputs_senha[0] if inputs_senha else driver.find_element(By.XPATH, "(//input)[last()]")
-
-        preencher_campo_js(driver, campo_empresa, empresa)
-        preencher_campo_js(driver, campo_user, usuario)
-        preencher_campo_js(driver, campo_pass, senha)
-
-        time.sleep(1)
-
-        botoes = driver.find_elements(By.XPATH, "//button | //input[@type='submit' or @type='button']")
-        btn_entrar = None
-        for b in botoes:
-            txt = b.text or b.get_attribute("value") or ""
-            if "entrar" in txt.lower() or "acessar" in txt.lower() or b.get_attribute("id") == "btnLogin":
-                btn_entrar = b
-                break
-
-        if btn_entrar:
-            driver.execute_script("arguments[0].click();", btn_entrar)
-        else:
-            campo_pass.send_keys(Keys.ENTER)
-
-        time.sleep(6)
-
-        if log_container:
-            log_container.info("📂 Procurando o menu lateral e acionando o relatório...")
-
-        def localizar_e_clicar_menu():
-            frames_para_testar = [None] + driver.find_elements(By.TAG_NAME, "iframe")
-            
-            for frame in frames_para_testar:
-                driver.switch_to.default_content()
-                if frame:
-                    try:
-                        driver.switch_to.frame(frame)
-                    except Exception:
-                        continue
-
-                try:
-                    menu_pai = driver.find_elements(By.XPATH, "//*[contains(text(),'acessíveis') or contains(text(),'Portal do Cliente') or contains(@class,'menu')]")
-                    if menu_pai:
-                        ActionChains(driver).move_to_element(menu_pai[0]).perform()
-                        driver.execute_script("arguments[0].click();", menu_pai[0])
-                        time.sleep(1)
-                except Exception:
-                    pass
-
-                xpath_item = "//*[@id='MenuLateralGamma-item-1078205'] | //a[@webrun-menu-action-param='500000966'] | //*[contains(text(),'Rel. Vendas por')]"
-                itens = driver.find_elements(By.XPATH, xpath_item)
-                if itens:
-                    driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", itens[0])
-                    return True
-
-            return False
-
-        menu_clicado = False
-        for _ in range(5):
-            if localizar_e_clicar_menu():
-                menu_clicado = True
-                break
-            time.sleep(2)
-
-        if not menu_clicado:
-            driver.switch_to.default_content()
-            driver.execute_script("""
-                if (typeof ebfFormOpen === 'function') {
-                    ebfFormOpen('500000966', '');
-                }
-            """)
-
-        time.sleep(5)
-
-        def alternar_para_frame_do_modal():
-            driver.switch_to.default_content()
-            
-            if driver.find_elements(By.XPATH, "//*[@webrun-id='TIPO_EXPORTACAO'] | //*[contains(text(),'Visualizar')]"):
-                return True
-
-            for frame in driver.find_elements(By.TAG_NAME, "iframe"):
-                try:
-                    driver.switch_to.default_content()
-                    driver.switch_to.frame(frame)
-                    if driver.find_elements(By.XPATH, "//*[@webrun-id='TIPO_EXPORTACAO'] | //*[contains(text(),'Visualizar')]"):
-                        return True
-                except Exception:
-                    continue
-            return False
-
-        alternar_para_frame_do_modal()
-
-        if log_container:
-            log_container.info("📄 Alterando o Tipo de Exportação para TEXTO...")
-
-        try:
-            script_exportacao = """
-                var divExp = document.querySelector("[webrun-id='TIPO_EXPORTACAO']");
-                if (divExp) {
-                    var selectExp = divExp.querySelector("select");
-                    if (selectExp) {
-                        for (var i = 0; i < selectExp.options.length; i++) {
-                            if (selectExp.options[i].text.toUpperCase().includes("TEXTO") || 
-                                selectExp.options[i].text.toUpperCase().includes("TXT")) {
-                                selectExp.selectedIndex = i;
-                                selectExp.dispatchEvent(new Event('change', { bubbles: true }));
-                                break;
-                            }
-                        }
-                    }
-                }
-            """
-            driver.execute_script(script_exportacao)
-            time.sleep(1)
-        except Exception as e_exp:
-            if log_container:
-                log_container.warning(f"⚠️ Aviso ao selecionar tipo de exportação: {e_exp}")
-
-        if cliente_alvo:
-            try:
-                selects_cli = driver.find_elements(By.TAG_NAME, "select")
-                if selects_cli:
-                    Select(selects_cli[0]).select_by_visible_text(cliente_alvo)
-            except Exception: pass
-
-        if log_container:
-            log_container.info("📅 Preenchendo o período das datas...")
-
-        inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
-        if len(inputs_modal) >= 2:
-            preencher_campo_js(driver, inputs_modal[-2], data_inicio)
-            preencher_campo_js(driver, inputs_modal[-1], data_fim)
-        else:
-            driver.execute_script("""
-                var inputs = document.querySelectorAll("input[type='text'], input:not([type])");
-                if (inputs.length >= 2) {
-                    inputs[inputs.length - 2].value = arguments[0];
-                    inputs[inputs.length - 1].value = arguments[1];
-                }
-            """, data_inicio, data_fim)
-
-        time.sleep(1.5)
-
-        if log_container:
-            log_container.info("🖨️ Disparando a exportação direta do relatório...")
-
-        # Injeta monitoramento de requisições XHR / Fetch
-        driver.execute_script("""
-            window.__last_download_url = null;
-            var origOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function() {
-                this.addEventListener('load', function() {
-                    if (this.responseURL && (this.responseURL.includes('ebf') || this.responseURL.includes('report') || this.responseURL.includes('download') || this.responseURL.includes('TXT'))) {
-                        window.__last_download_url = this.responseURL;
-                    }
-                });
-                origOpen.apply(this, arguments);
-            };
-        """)
-
-        # Clica no botão e aciona formulário
-        script_clique = """
-            var btn = document.querySelector("#Img_Visualizar") || 
-                      document.querySelector("[id*='Visualizar']") ||
-                      Array.from(document.querySelectorAll("button, a, div, img")).find(e => (e.textContent || e.title || '').includes("Visualizar"));
-            if (btn) {
-                btn.click();
-            }
-            if (typeof ebfFormSubmit === 'function') {
-                ebfFormSubmit();
-            }
-            if (typeof ebfFormPreview === 'function') {
-                ebfFormPreview();
-            }
-        """
-        driver.execute_script(script_clique)
-
-        if log_container:
-            log_container.info("⏳ Aguardando a gravação do arquivo no disco...")
-
-        caminho_arquivo_baixado = None
-        for _ in range(35):
-            time.sleep(1)
-            # 1. Checa se o browser gravou no disco
-            arquivos = glob.glob(os.path.join(download_dir, "*"))
-            validos = [f for f in arquivos if not f.endswith('.crdownload') and not f.endswith('.tmp')]
-            if validos:
-                caminho_arquivo_baixado = validos[0]
-                break
-                
-            # 2. Checa se uma URL de resposta foi capturada para baixar via Requests
-            url_cap = driver.execute_script("return window.__last_download_url;")
-            if url_cap:
-                cookies = {c['name']: c['value'] for c in driver.get_cookies()}
-                res = requests.get(url_cap, cookies=cookies)
-                if res.status_code == 200:
-                    caminho_arquivo_baixado = os.path.join(download_dir, "relatorio_liveposto.txt")
-                    with open(caminho_arquivo_baixado, "wb") as f:
-                        f.write(res.content)
-                    break
-
-        if not caminho_arquivo_baixado:
-            raise Exception("Timeout: Nenhum arquivo foi gravado no disco dentro do tempo limite de 60 segundos.")
-
-        return caminho_arquivo_baixado
-
-    except Exception as e:
-        erro_detalhado = traceback.format_exc()
-        if log_container:
-            log_container.error(f"❌ Erro ao interagir com o Liveposto: {e}")
-            log_container.markdown("### 🔍 Traceback Completo da Exceção:")
-            log_container.code(erro_detalhado, language="python")
-        return None
-    finally:
-        driver.quit()
 
 # ---------------------------------------------------------
 # CHECAGEM DE DUPLICATAS ROBUSTA (ZUQ)
@@ -696,7 +402,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
     total_registros = len(df)
 
     try:
-        log_container.info("🌐 Conectando ao portal ZUQ (modo otimizado)...")
+        log_container.info("🌐 Conectando ao portal ZUQ...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -943,7 +649,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, MODO_VISIVEL, log_con
 # ---------------------------------------------------------
 if verificar_senha():
     st.markdown('<div class="main-header">⛽ Central de Automação ZUQ</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Importe ou baixe o relatório de abastecimentos para sincronização automática com o sistema ZUQ.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Importe o relatório de abastecimentos (PDF ou TXT) baixado do Liveposto para sincronização automática no ZUQ.</div>', unsafe_allow_html=True)
 
     with st.sidebar:
         st.header("⚙️ Configurações do ZUQ")
@@ -963,65 +669,14 @@ if verificar_senha():
     col_upload, col_dashboard = st.columns([1.1, 1])
 
     with col_upload:
-        st.subheader("1. Origem dos Dados")
+        st.subheader("1. Carregar Relatório (Manual)")
         
-        metodo_origem = st.radio(
-            "Selecione como deseja obter o relatório:",
-            ["📁 Upload Manual de PDF/TXT", "🌐 Baixar Direto do Liveposto"],
-            horizontal=True
-        )
-
+        uploaded_file = st.file_uploader("Selecione o arquivo de abastecimento (PDF ou TXT baixado do Liveposto)", type=["pdf", "txt"])
         dados_df = None
 
-        if metodo_origem == "📁 Upload Manual de PDF/TXT":
-            uploaded_file = st.file_uploader("Selecione o arquivo de abastecimento (PDF ou TXT)", type=["pdf", "txt"])
-            if uploaded_file:
-                dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-                st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
-
-        else:
-            st.info("Informe os dados do Liveposto para download automático.")
-            empresa_liveposto = st.text_input("Empresa Portal", value="L1904")
-            
-            cliente_liveposto = st.text_input("Cliente / Empresa", value="OBJETIVA DISTRIBUIDORA LTDA")
-            combustivel_liveposto = st.text_input("Combustível / Empresa (Filtro)", value="ETANOL - Empresa: POSTO GURI", help="Deixe em branco ou digite TODOS para pegar o padrão.")
-            
-            c_user, c_pass = st.columns(2)
-            user_liveposto = c_user.text_input("Usuário Liveposto", value="RTLOG")
-            pass_liveposto = c_pass.text_input("Senha Liveposto", type="password")
-            
-            c_dt1, c_dt2 = st.columns(2)
-            dt_inicio = c_dt1.date_input("Data Inicial")
-            dt_fim = c_dt2.date_input("Data Final")
-
-            if st.button("📥 Baixar PDF/Relatório do Liveposto", use_container_width=True):
-                if not pass_liveposto:
-                    st.error("Informe a senha do Liveposto.")
-                else:
-                    with st.spinner("Baixando relatório do Liveposto..."):
-                        str_inicio = dt_inicio.strftime("%d/%m/%Y")
-                        str_fim = dt_fim.strftime("%d/%m/%Y")
-                        
-                        caminho_relatorio = baixar_relatorio_liveposto(
-                            empresa_liveposto,
-                            cliente_liveposto,
-                            combustivel_liveposto,
-                            user_liveposto, 
-                            pass_liveposto, 
-                            str_inicio, 
-                            str_fim, 
-                            log_container=st
-                        )
-
-                        if caminho_relatorio and os.path.exists(caminho_relatorio):
-                            dados_df = extrair_dados_txt_ou_pdf(caminho_relatorio)
-                            st.session_state["dados_df_carregados"] = dados_df
-                            st.success(f"Relatório baixado! **{len(dados_df)}** abastecimentos identificados.")
-                        else:
-                            st.error("Falha ao baixar o relatório do Liveposto.")
-
-            if "dados_df_carregados" in st.session_state and dados_df is None:
-                dados_df = st.session_state["dados_df_carregados"]
+        if uploaded_file:
+            dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
+            st.success(f"Ficheiro lido com sucesso! **{len(dados_df)}** abastecimentos identificados.")
 
         if dados_df is not None and not dados_df.empty:
             with st.expander("👁️ Ver prévia dos abastecimentos lidos"):
@@ -1040,7 +695,7 @@ if verificar_senha():
 
         if st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True):
             if dados_df is None or dados_df.empty:
-                st.error("Carregue um arquivo PDF/TXT ou faça o download via Liveposto primeiro.")
+                st.error("Carregue um arquivo PDF ou TXT primeiro.")
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ na barra lateral.")
             else:
