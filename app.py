@@ -176,7 +176,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (HOVER + ID EXATO WEBRUN)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (COM VARREDURA DE FRAMES)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -221,7 +221,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         driver = webdriver.Chrome(options=options)
 
     driver.set_page_load_timeout(40)
-    wait = WebDriverWait(driver, 25)
+    wait = WebDriverWait(driver, 15)
 
     try:
         if log_container:
@@ -273,48 +273,61 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             campo_pass.send_keys(Keys.ENTER)
 
         time.sleep(6)
-        driver.switch_to.default_content()
 
-        # 2. NAVEGAÇÃO NO MENU LATERAL VIA HOVER E ID CAPTURADO (500000966 / 1078205)
+        # 2. SELEÇÃO DO MENU LATERAL COM VARREDURA DE FRAMES
         if log_container:
-            log_container.info("📂 Expandindo menu lateral e selecionando o relatório...")
+            log_container.info("📂 Procurando o menu lateral e acionando o relatório...")
 
-        # Move o ponteiro do mouse para a barra lateral esquerda para ativar o efeito hover
-        try:
-            barra_lateral = driver.find_element(By.XPATH, "//div[contains(@class,'sidebar') or contains(@class,'menu')] | (//div)[1]")
-            ActionChains(driver).move_to_element(barra_lateral).perform()
-            time.sleep(1.5)
-        except Exception:
-            pass
+        def localizar_e_clicar_menu():
+            # Tenta contexto principal e depois todos os frames
+            frames_para_testar = [None] + driver.find_elements(By.TAG_NAME, "iframe")
+            
+            for frame in frames_para_testar:
+                driver.switch_to.default_content()
+                if frame:
+                    try:
+                        driver.switch_to.frame(frame)
+                    except Exception:
+                        continue
 
-        # Dispara a abertura usando os seletores reais capturados na inspeção de código da imagem
-        seletor_abertura_js = """
-            var item = document.getElementById("MenuLateralGamma-item-1078205") || 
-                       document.querySelector("a[webrun-menu-action-param='500000966']") ||
-                       document.querySelector("a[href*='500000966']");
-            if (item) {
-                item.click();
-                return true;
-            }
-            if (typeof ebfFormOpen === 'function') {
-                ebfFormOpen('500000966', '');
-                return true;
-            }
-            return false;
-        """
+                # 1º Passo: Expande o menu se estiver retraído[cite: 16]
+                try:
+                    menu_pai = driver.find_elements(By.XPATH, "//*[contains(text(),'acessíveis') or contains(text(),'Portal do Cliente') or contains(@class,'menu')]")
+                    if menu_pai:
+                        ActionChains(driver).move_to_element(menu_pai[0]).perform()
+                        driver.execute_script("arguments[0].click();", menu_pai[0])
+                        time.sleep(1)
+                except Exception:
+                    pass
 
-        executado = driver.execute_script(seletor_abertura_js)
+                # 2º Passo: Tenta clicar no subitem de relatório
+                xpath_item = "//*[@id='MenuLateralGamma-item-1078205'] | //a[@webrun-menu-action-param='500000966'] | //*[contains(text(),'Rel. Vendas por')]"
+                itens = driver.find_elements(By.XPATH, xpath_item)
+                if itens:
+                    driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", itens[0])
+                    return True
 
-        if not executado:
-            # Fallback direto via XPath para o ID capturado ou o parâmetro da ação
-            link_rel = wait.until(EC.presence_of_element_located((
-                By.XPATH, "//*[@id='MenuLateralGamma-item-1078205'] | //a[@webrun-menu-action-param='500000966'] | //*[contains(text(),'Rel. Vendas por')]"
-            )))
-            driver.execute_script("arguments[0].click();", link_rel)
+            return False
+
+        menu_clicado = False
+        for _ in range(5):
+            if localizar_e_clicar_menu():
+                menu_clicado = True
+                break
+            time.sleep(2)
+
+        if not menu_clicado:
+            # Fallback por execução de script global
+            driver.switch_to.default_content()
+            driver.execute_script("""
+                if (typeof ebfFormOpen === 'function') {
+                    ebfFormOpen('500000966', '');
+                }
+            """)
 
         time.sleep(5)
 
-        # 3. CONTEXTO DO POPUP / MODAL DO RELATÓRIO
+        # 3. INTERAÇÃO COM O MODAL DO RELATÓRIO
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
@@ -322,7 +335,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if frames_modal:
             driver.switch_to.frame(frames_modal[-1])
 
-        # 4. PREENCHIMENTO DOS CAMPOS DO MODAL DE IMPRESSÃO
+        # 4. CAMPO DE CLIENTE E COMBUSTÍVEL
         if cliente_alvo:
             if log_container:
                 log_container.info(f"🏢 Selecionando o Cliente: '{cliente_alvo}'...")
@@ -352,7 +365,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 if log_container:
                     log_container.warning(f"⚠️ Mantido combustível pré-selecionado ({e_comb})")
 
-        # Configura as datas inicial e final
+        # Configura as datas
         if log_container:
             log_container.info("📅 Inserindo o período das datas...")
 
@@ -376,7 +389,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         preencher_campo_js(driver, campo_dt_fim, data_fim)
         time.sleep(1)
 
-        # 5. GERAR O PDF (BOTÃO VISUALIZAR DO MODAL)
+        # 5. IMPRESSÃO DO PDF
         if log_container:
             log_container.info("🖨️ Disparando a geração do arquivo PDF...")
 
