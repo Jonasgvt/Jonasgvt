@@ -24,7 +24,7 @@ from selenium.common.exceptions import (
 # CONFIGURAÇÃO DE PÁGINA E ESTILO APPLE GLASS
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="ZUQ Fleet - Apple Glass",
+    page_title="ZUQ Fleet - Auditoria & Automação",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -52,7 +52,7 @@ st.markdown("""
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 2.5rem !important;
-        max-width: 1200px !important;
+        max-width: 1250px !important;
     }
 
     .glass-header {
@@ -203,7 +203,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER ATUALIZADO E PRECISO PARA LIVEPOSTO (PDF / TXT)
+# PARSER E EXTRATOR DO LIVEPOSTO
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -223,7 +223,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
     registos = []
     lines = []
 
-    # Leitura das linhas do arquivo enviado (Stream ou Caminho)
     if hasattr(caminho_ou_stream, 'name') and caminho_ou_stream.name.lower().endswith('.pdf'):
         try:
             reader = pypdf.PdfReader(caminho_ou_stream)
@@ -247,7 +246,6 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
     while i < len(lines):
         line = lines[i].strip()
 
-        # Procura linhas principais com indicação de Placa e Data
         m_placa = re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', line)
         m_data = re.search(r'(\d{2}/\d{2}/\d{2,4})', line)
 
@@ -268,45 +266,37 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             m_km = re.search(r'(\d{2,3}\.\d{3}|\d{5,6})', line)
             km = m_km.group(1).replace('.', '') if m_km else ""
 
-            # Analisa as linhas subsequentes do item de produto
             j = i + 1
             while j < len(lines):
                 sub_line = lines[j].strip()
                 
-                # Para se encontrar o encerramento da placa ou a próxima placa
                 if "Total da Placa:" in sub_line or (j > i + 1 and re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line)):
                     break
 
-                # Captura o item DIESEL
                 if "DIESEL" in sub_line.upper():
                     produto_nome = "DIESEL B S10 ADITIVADO"
                     
-                    # Procura na linha do combustível ou na linha imediatamente abaixo os numéricos
                     busca_linha = sub_line
                     if j + 1 < len(lines):
                         busca_linha += " " + lines[j+1].strip()
 
                     numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', busca_linha)
-                    
-                    # Filtra apenas numéricos decimais ou inteiros formatados
                     nums_validos = [n for n in numeros if ',' in n or '.' in n]
 
                     if nums_validos:
-                        # No layout Liveposto: Preço unitário costuma ser ~7,600 e a quantidade ~40-250 L
                         vlr_unit = "7,600"
                         quantidade = "0,00"
                         valor_total = "0,00"
 
                         for num in nums_validos:
                             val_float = limpa_numero(num)
-                            if 6.0 <= val_float <= 9.0 and vlr_unit == "7,600":
+                            if 5.0 <= val_float <= 10.0 and vlr_unit == "7,600":
                                 vlr_unit = num
                             elif val_float > 15.0 and quantidade == "0,00":
                                 quantidade = num
                             elif val_float > 200.0 and valor_total == "0,00":
                                 valor_total = num
 
-                        # Se não preencheu por regra de faixa, aplica ordenação por posição
                         if quantidade == "0,00" and len(nums_validos) >= 2:
                             vlr_unit = nums_validos[0]
                             quantidade = nums_validos[1]
@@ -329,7 +319,52 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
 
         i += 1
 
-    return pd.DataFrame(registos)
+    df = pd.DataFrame(registos)
+    return auditar_e_validar_dados(df)
+
+# ---------------------------------------------------------
+# MOTOR DE AUDITORIA & CHECAGEM DE DIVERGÊNCIAS
+# ---------------------------------------------------------
+def auditar_e_validar_dados(df):
+    if df.empty:
+        return df
+
+    df['divergencia'] = False
+    df['alertas_auditoria'] = ''
+
+    for idx, row in df.iterrows():
+        alertas = []
+
+        # 1. Validação de KM / Odômetro
+        km_val = limpa_numero(row['km'])
+        if km_val == 0:
+            alertas.append("⚠️ Odômetro Zerado/Ausente")
+        elif km_val < 1000:
+            alertas.append(f"⚠️ KM atípico ({row['km']})")
+
+        # 2. Validação de Preço por Litro
+        preco_val = limpa_numero(row['valor_unitario'])
+        if preco_val == 0:
+            alertas.append("❌ Preço por litro zerado")
+        elif preco_val < 4.00 or preco_val > 9.50:
+            alertas.append(f"⚠️ Preço por litro atípico (R$ {row['valor_unitario']})")
+
+        # 3. Validação de Quantidade (Litros)
+        litros_val = limpa_numero(row['quantidade'])
+        if litros_val == 0:
+            alertas.append("❌ Quantidade de litros zerada")
+
+        # 4. Validação de Placa (Formato Mercosul ou Antigo)
+        if not re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', row['placa']):
+            alertas.append("⚠️ Formato de placa suspeito")
+
+        if alertas:
+            df.at[idx, 'divergencia'] = True
+            df.at[idx, 'alertas_auditoria'] = " | ".join(alertas)
+        else:
+            df.at[idx, 'alertas_auditoria'] = "✅ OK"
+
+    return df
 
 def fechar_alerta_se_existir(driver, log_container):
     try:
@@ -373,7 +408,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# CHECAGEM DE DUPLICATAS NO ZUQ
+# CHECAGEM DE DUPLICATAS E AUDITORIA ZUQ
 # ---------------------------------------------------------
 def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litros, preco, ultima_placa_filtrada, log_container):
     try:
@@ -415,7 +450,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
                 
                 if not opcoes:
-                    log_container.warning(f"⚠️ Placa {placa} não cadastrada no ZUQ.")
+                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no cadastro ZUQ!")
                     btn_cancelar = driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]")
                     btn_cancelar.click()
                     time.sleep(0.8)
@@ -475,7 +510,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                     linhas_duplicadas.append(linha)
 
         if len(linhas_duplicadas) >= 2:
-            log_container.warning(f"🚨 Duplicata encontrada em {data} ({litros}L). Removendo...")
+            log_container.warning(f"🚨 Duplicata no ZUQ em {data} ({litros}L). Removendo...")
             linha_para_remover = linhas_duplicadas[0]
 
             try:
@@ -499,14 +534,14 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 time.sleep(1.2)
 
                 fechar_alerta_se_existir(driver, log_container)
-                log_container.info("✅ Registro removido.")
+                log_container.info("✅ Registro excedente removido.")
                 time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
                 log_container.error(f"❌ Erro ao remover duplicata: {e_rem}")
 
         elif len(linhas_duplicadas) == 1:
-            log_container.info(f"🔍 Registro {data} ({litros}L) já existe. Pulando...")
+            log_container.info(f"🔍 Registro {data} ({litros}L) já existe no ZUQ. Ignorando...")
             return True, True, placa
 
     except Exception:
@@ -589,7 +624,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             progress_bar.progress(progress, text=f"Lançando {idx+1} de {total_registros}")
             horario_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço: R$ {row['valor_unitario']}")
+            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {row['placa']}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço: R$ {row['valor_unitario']} | KM: {row['km']}")
 
             fechar_alerta_se_existir(driver, log_container)
 
@@ -615,9 +650,9 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
-                df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
+                df_relatorio.at[idx, 'status_lancamento'] = 'Divergência / Ignorado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada'
+                df_relatorio.at[idx, 'observacao'] = 'Placa não cadastrada no ZUQ'
                 continue
 
             if ja_cadastrado:
@@ -747,7 +782,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
                         erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
                         if erros_km and erros_km[0].is_displayed():
-                            log_container.warning("⚠️ Conflito no Odômetro! Limpando...")
+                            log_container.warning(f"⚠️ Conflito no Odômetro ({row['km']} KM). Limpando para salvar...")
                             campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
                             driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
                             time.sleep(0.5)
@@ -787,7 +822,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 if not df_relatorio.at[idx, 'observacao']:
                     df_relatorio.at[idx, 'observacao'] = 'Falha ao salvar'
 
-        log_container.success("🎉 Todos os abastecimentos foram processados!")
+        log_container.success("🎉 Processamento e auditoria concluídos!")
 
     except Exception as e:
         log_container.error(f"❌ Erro crítico: {e}")
@@ -797,17 +832,15 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
     return df_relatorio
 
 # ---------------------------------------------------------
-# RENDERIZAÇÃO DA INTERFACE APPLE GLASS
+# INTERFACE PRINCIPAL
 # ---------------------------------------------------------
 if verificar_senha():
-    # Header Apple Glass
     st.markdown("""
         <div class="glass-header">
-            <div class="glass-logo">⚡ ZUQ Fleet <span class="glass-badge">Apple Glass Edition</span></div>
+            <div class="glass-logo">⚡ ZUQ Fleet <span class="glass-badge">Auditoria & Auto</span></div>
         </div>
     """, unsafe_allow_html=True)
 
-    # Parâmetros em Expander Glass
     with st.expander("⚙️ Parâmetros de Conexão ZUQ", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         usuario_zuq = c1.text_input("Usuário", value="manutencaoverdesmares")
@@ -826,12 +859,18 @@ if verificar_senha():
         dados_df = None
         if uploaded_file:
             dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            st.success(f"✅ **{len(dados_df)}** abastecimentos de Diesel identificados com sucesso.")
+            
+            qtd_div = len(dados_df[dados_df['divergencia'] == True])
+            if qtd_div > 0:
+                st.warning(f"⚠️ **{len(dados_df)}** registros lidos, sendo **{qtd_div}** com alertas de divergência.")
+            else:
+                st.success(f"✅ **{len(dados_df)}** abastecimentos auditados e 100% integrantes.")
 
             st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("### 👁️ Prévia dos Dados")
+            st.markdown("### 👁️ Painel de Pré-Auditoria")
+            
             st.dataframe(
-                dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], 
+                dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria']], 
                 use_container_width=True,
                 height=320
             )
@@ -840,13 +879,13 @@ if verificar_senha():
         st.markdown("### 📊 2. Lançamento Automático")
         
         kpi1, kpi2, kpi3 = st.columns(3)
-        metric_total = kpi1.metric("Total de Registos", len(dados_df) if dados_df is not None else 0)
+        metric_total = kpi1.metric("Total Identificado", len(dados_df) if dados_df is not None else 0)
         metric_lancados = kpi2.metric("Sucesso", 0)
-        metric_ignorados = kpi3.metric("Ignorados", 0)
+        metric_ignorados = kpi3.metric("Ignorados / Divergentes", 0)
 
         st.markdown("<br>", unsafe_allow_html=True)
         
-        btn_iniciar = st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True)
+        btn_iniciar = st.button("🚀 Validar no ZUQ e Lançar", use_container_width=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         progress_bar = st.progress(0, text="Aguardando disparo...")
@@ -868,16 +907,16 @@ if verificar_senha():
                     csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
 
                     st.divider()
-                    st.markdown("### 📋 Relatório Consolidado")
+                    st.markdown("### 📋 Relatório Consolidado de Auditoria")
                     st.dataframe(
-                        df_resultado[['placa', 'data', 'quantidade', 'valor_unitario', 'status_lancamento', 'observacao']], 
+                        df_resultado[['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'status_lancamento', 'observacao']], 
                         use_container_width=True
                     )
 
                     st.download_button(
-                        label="📥 Baixar Relatório (CSV)",
+                        label="📥 Baixar Relatório Completo (CSV)",
                         data=csv_data,
-                        file_name=f"relatorio_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"relatorio_auditoria_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv",
                         use_container_width=True
                     )
