@@ -176,7 +176,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (COM VARREDURA DE FRAMES)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -221,7 +221,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         driver = webdriver.Chrome(options=options)
 
     driver.set_page_load_timeout(40)
-    wait = WebDriverWait(driver, 15)
+    wait = WebDriverWait(driver, 20)
 
     try:
         if log_container:
@@ -274,12 +274,11 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         time.sleep(6)
 
-        # 2. SELEÇÃO DO MENU LATERAL COM VARREDURA DE FRAMES
+        # 2. SELEÇÃO DO MENU LATERAL E LOCALIZAÇÃO DE FRAMES
         if log_container:
             log_container.info("📂 Procurando o menu lateral e acionando o relatório...")
 
         def localizar_e_clicar_menu():
-            # Tenta contexto principal e depois todos os frames
             frames_para_testar = [None] + driver.find_elements(By.TAG_NAME, "iframe")
             
             for frame in frames_para_testar:
@@ -290,7 +289,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                     except Exception:
                         continue
 
-                # 1º Passo: Expande o menu se estiver retraído[cite: 16]
                 try:
                     menu_pai = driver.find_elements(By.XPATH, "//*[contains(text(),'acessíveis') or contains(text(),'Portal do Cliente') or contains(@class,'menu')]")
                     if menu_pai:
@@ -300,7 +298,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 except Exception:
                     pass
 
-                # 2º Passo: Tenta clicar no subitem de relatório
                 xpath_item = "//*[@id='MenuLateralGamma-item-1078205'] | //a[@webrun-menu-action-param='500000966'] | //*[contains(text(),'Rel. Vendas por')]"
                 itens = driver.find_elements(By.XPATH, xpath_item)
                 if itens:
@@ -317,7 +314,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             time.sleep(2)
 
         if not menu_clicado:
-            # Fallback por execução de script global
             driver.switch_to.default_content()
             driver.execute_script("""
                 if (typeof ebfFormOpen === 'function') {
@@ -327,13 +323,28 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         time.sleep(5)
 
-        # 3. INTERAÇÃO COM O MODAL DO RELATÓRIO
-        if len(driver.window_handles) > 1:
-            driver.switch_to.window(driver.window_handles[-1])
+        # 3. INTERAÇÃO E GARANTIA DE FOCO NO MODAL DO RELATÓRIO
+        def alternar_para_frame_do_modal():
+            if len(driver.window_handles) > 1:
+                driver.switch_to.window(driver.window_handles[-1])
 
-        frames_modal = driver.find_elements(By.TAG_NAME, "iframe")
-        if frames_modal:
-            driver.switch_to.frame(frames_modal[-1])
+            driver.switch_to.default_content()
+            
+            # Se os botões já estiverem na raiz
+            if driver.find_elements(By.XPATH, "//button[contains(.,'Visualizar')] | //*[@id='Img_Visualizar']"):
+                return True
+
+            for frame in driver.find_elements(By.TAG_NAME, "iframe"):
+                try:
+                    driver.switch_to.default_content()
+                    driver.switch_to.frame(frame)
+                    if driver.find_elements(By.XPATH, "//button[contains(.,'Visualizar')] | //*[@id='Img_Visualizar'] | //input[@type='text']"):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        alternar_para_frame_do_modal()
 
         # 4. CAMPO DE CLIENTE E COMBUSTÍVEL
         if cliente_alvo:
@@ -343,6 +354,14 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 selects = driver.find_elements(By.TAG_NAME, "select")
                 if selects:
                     Select(selects[0]).select_by_visible_text(cliente_alvo)
+                else:
+                    elem_cli = driver.find_elements(By.XPATH, "//*[contains(@id,'WFRInput') or contains(@class,'lookup')]")
+                    if elem_cli:
+                        driver.execute_script("arguments[0].click();", elem_cli[0])
+                        time.sleep(1)
+                        item_cli = driver.find_elements(By.XPATH, f"//*[contains(text(),'{cliente_alvo}')]")
+                        if item_cli:
+                            driver.execute_script("arguments[0].click();", item_cli[0])
             except Exception as e_cli:
                 if log_container:
                     log_container.warning(f"⚠️ Mantido cliente pré-selecionado ({e_cli})")
@@ -365,31 +384,59 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 if log_container:
                     log_container.warning(f"⚠️ Mantido combustível pré-selecionado ({e_comb})")
 
-        # Configura as datas
+        # 5. PREENCHIMENTO SEGURO DAS DATAS (PREVINE INDEXERROR)
         if log_container:
             log_container.info("📅 Inserindo o período das datas...")
 
-        inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text']")
+        # Tenta reencontrar o frame correto se a busca inicial por inputs vier vazia
+        inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
+        if not inputs_modal:
+            alternar_para_frame_do_modal()
+            inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
+
         campo_dt_inicio = None
         campo_dt_fim = None
 
-        for inp in inputs_modal:
-            val = inp.get_attribute("value") or ""
-            if "/" in val or "01" in val:
-                if not campo_dt_inicio:
-                    campo_dt_inicio = inp
-                else:
-                    campo_dt_fim = inp
+        if len(inputs_modal) >= 2:
+            # Varre inputs para capturar o padrão de data
+            for inp in inputs_modal:
+                val = inp.get_attribute("value") or ""
+                if "/" in val or "01" in val:
+                    if not campo_dt_inicio:
+                        campo_dt_inicio = inp
+                    else:
+                        campo_dt_fim = inp
 
-        if not campo_dt_inicio or not campo_dt_fim:
-            campo_dt_inicio = inputs_modal[-2] if len(inputs_modal) >= 2 else inputs_modal[0]
-            campo_dt_fim = inputs_modal[-1] if len(inputs_modal) >= 2 else inputs_modal[0]
+            if not campo_dt_inicio or not campo_dt_fim:
+                campo_dt_inicio = inputs_modal[-2]
+                campo_dt_fim = inputs_modal[-1]
+        elif len(inputs_modal) == 1:
+            campo_dt_inicio = inputs_modal[0]
+            campo_dt_fim = inputs_modal[0]
+        else:
+            # Fallback JavaScript direto no DOM para ignorar falta de elementos via Selenium pura
+            driver.execute_script("""
+                var inputs = document.querySelectorAll("input");
+                var dt_inputs = [];
+                inputs.forEach(function(i) {
+                    if (i.type === 'text' || !i.type) dt_inputs.push(i);
+                });
+                if (dt_inputs.length >= 2) {
+                    dt_inputs[dt_inputs.length - 2].value = arguments[0];
+                    dt_inputs[dt_inputs.length - 1].value = arguments[1];
+                } else if (dt_inputs.length === 1) {
+                    dt_inputs[0].value = arguments[0];
+                }
+            """, data_inicio, data_fim)
 
-        preencher_campo_js(driver, campo_dt_inicio, data_inicio)
-        preencher_campo_js(driver, campo_dt_fim, data_fim)
+        if campo_dt_inicio:
+            preencher_campo_js(driver, campo_dt_inicio, data_inicio)
+        if campo_dt_fim:
+            preencher_campo_js(driver, campo_dt_fim, data_fim)
+            
         time.sleep(1)
 
-        # 5. IMPRESSÃO DO PDF
+        # 6. IMPRESSÃO E GERAMENTO DO PDF
         if log_container:
             log_container.info("🖨️ Disparando a geração do arquivo PDF...")
 
@@ -412,7 +459,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if log_container:
             log_container.info("📥 Baixando arquivo PDF gerado...")
 
-        # 6. CAPTURA DO PDF BAIXADO
+        # CAPTURA DO PDF NA PASTA TEMPORÁRIA
         caminho_pdf_baixado = None
         for _ in range(35):
             time.sleep(1)
