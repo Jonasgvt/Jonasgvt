@@ -2,13 +2,11 @@ import os
 import re
 import glob
 import time
-import base64
 import tempfile
 import traceback
 from datetime import datetime
 import pandas as pd
 import pypdf
-import requests
 import streamlit as st
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -73,7 +71,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# FUNÇÕES AUXILIARES E EXTRAÇÃO DE PDF
+# FUNÇÕES AUXILIARES E PARSER DE ARQUIVO
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -89,47 +87,60 @@ def limpa_numero(val_str):
     except:
         return 0.0
 
-def extrair_dados_pdf(stream_pdf):
-    reader = pypdf.PdfReader(stream_pdf)
+def extrair_dados_txt_ou_pdf(caminho_ou_stream):
+    """Lê dados de abastecimento tanto de arquivos TXT/CSV quanto de arquivos PDF."""
     registos = []
+    
+    lines = []
+    if isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
+        if caminho_ou_stream.lower().endswith('.pdf'):
+            reader = pypdf.PdfReader(caminho_ou_stream)
+            for page in reader.pages:
+                lines.extend(page.extract_text().split('\n'))
+        else:
+            with open(caminho_ou_stream, 'r', encoding='latin1', errors='ignore') as f:
+                lines = f.readlines()
+    else:
+        reader = pypdf.PdfReader(caminho_ou_stream)
+        for page in reader.pages:
+            lines.extend(page.extract_text().split('\n'))
 
-    for page in reader.pages:
-        lines = page.extract_text().split('\n')
-        for i, line in enumerate(lines):
-            if re.match(r'^\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}\s+\d+', line):
-                hdr = line
-                nxt = lines[i+1] if i+1 < len(lines) else ""
-                
-                m_h = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+(\d+)\s+(.*)', hdr)
-                if not m_h:
-                    continue
-                dt, tm, cupom, rest = m_h.groups()
+    for i, line in enumerate(lines):
+        line_clean = line.strip()
+        if re.match(r'^\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}\s+\d+', line_clean):
+            hdr = line_clean
+            nxt = lines[i+1].strip() if i+1 < len(lines) else ""
+            
+            m_h = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+(\d+)\s+(.*)', hdr)
+            if not m_h:
+                continue
+            dt, tm, cupom, rest = m_h.groups()
 
-                m_placa = re.match(r'^([A-Z0-9\-]+)\s+(.*)', rest)
-                placa = m_placa.group(1).replace('-', '') if m_placa else ""
-                rest2 = m_placa.group(2) if m_placa else rest
+            m_placa = re.match(r'^([A-Z0-9\-]+)\s+(.*)', rest)
+            placa = m_placa.group(1).replace('-', '') if m_placa else ""
+            rest2 = m_placa.group(2) if m_placa else rest
 
-                m_n = re.search(r'^(.*?)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)$', nxt.strip())
-                if m_n:
-                    prod, vlr_unit, quant, total = m_n.groups()
-                else:
-                    prod = nxt.strip()
-                    vlr_unit, quant, total = "", "", ""
+            m_n = re.search(r'^(.*?)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)$', nxt)
+            if m_n:
+                prod, vlr_unit, quant, total = m_n.groups()
+            else:
+                prod = nxt
+                vlr_unit, quant, total = "", "", ""
 
-                km_match = re.search(r'(\d{1,3}(?:\.\d{3})+|\d{3,6})', rest2)
-                km = km_match.group(1) if km_match else ""
+            km_match = re.search(r'(\d{1,3}(?:\.\d{3})+|\d{3,6})', rest2)
+            km = km_match.group(1) if km_match else ""
 
-                registos.append({
-                    'data': dt,
-                    'hora': tm,
-                    'cupom': cupom,
-                    'placa': placa,
-                    'produto': prod,
-                    'quantidade': quant,
-                    'valor_unitario': vlr_unit,
-                    'valor_total': total,
-                    'km': km
-                })
+            registos.append({
+                'data': dt,
+                'hora': tm,
+                'cupom': cupom,
+                'placa': placa,
+                'produto': prod,
+                'quantidade': quant,
+                'valor_unitario': vlr_unit,
+                'valor_total': total,
+                'km': km
+            })
 
     return pd.DataFrame(registos)
 
@@ -188,7 +199,7 @@ def preencher_campo_js(driver, elemento, valor):
         arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
     """, elemento, valor)
 
-def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha, data_inicio, data_fim, log_container=None):
+def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha, data_inicio, data_fim, log_container=None):
     download_dir = tempfile.mkdtemp()
 
     options = webdriver.ChromeOptions()
@@ -197,16 +208,12 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-popup-blocking")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True,
-        "pdfjs.disabled": True
+        "download.directory_upgrade": True
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -224,7 +231,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # Força salvamento automático em Headless via DevTools Protocol
+    # Permite download automático no Headless
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -333,21 +340,21 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         time.sleep(5)
 
-        # 3. INTERAÇÃO COM O MODAL DO RELATÓRIO
+        # 3. INTERAÇÃO E ENQUADRAMENTO NO MODAL WEBRUN
         def alternar_para_frame_do_modal():
             if len(driver.window_handles) > 1:
                 driver.switch_to.window(driver.window_handles[-1])
 
             driver.switch_to.default_content()
             
-            if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar'] | //img[contains(@src,'Visualizar')]"):
+            if driver.find_elements(By.XPATH, "//*[@webrun-id='TIPO_EXPORTACAO'] | //*[contains(text(),'Visualizar')]"):
                 return True
 
             for frame in driver.find_elements(By.TAG_NAME, "iframe"):
                 try:
                     driver.switch_to.default_content()
                     driver.switch_to.frame(frame)
-                    if driver.find_elements(By.XPATH, "//*[contains(text(),'Visualizar')] | //*[@id='Img_Visualizar'] | //img[contains(@src,'Visualizar')] | //input[@type='text']"):
+                    if driver.find_elements(By.XPATH, "//*[@webrun-id='TIPO_EXPORTACAO'] | //*[contains(text(),'Visualizar')]"):
                         return True
                 except Exception:
                     continue
@@ -355,229 +362,93 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         alternar_para_frame_do_modal()
 
-        # 4. APLICAÇÃO DOS FILTROS E DATAS
-        if cliente_alvo:
-            if log_container:
-                log_container.info(f"🏢 Selecionando o Cliente: '{cliente_alvo}'...")
-            try:
-                selects = driver.find_elements(By.TAG_NAME, "select")
+        # 4. SELEÇÃO DO TIPO DE EXPORTAÇÃO (TEXTO / EXCEL)
+        if log_container:
+            log_container.info("📄 Alterando o Tipo de Exportação para TEXTO...")
+
+        try:
+            script_exportacao = """
+                var divExp = document.querySelector("[webrun-id='TIPO_EXPORTACAO']");
+                if (divExp) {
+                    var selectExp = divExp.querySelector("select");
+                    if (selectExp) {
+                        for (var i = 0; i < selectExp.options.length; i++) {
+                            if (selectExp.options[i].text.toUpperCase().includes("TEXTO") || 
+                                selectExp.options[i].text.toUpperCase().includes("TXT")) {
+                                selectExp.selectedIndex = i;
+                                selectExp.dispatchEvent(new Event('change', { bubbles: true }));
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            """
+            if not driver.execute_script(script_exportacao):
+                selects = driver.find_elements(By.XPATH, "//div[@webrun-id='TIPO_EXPORTACAO']//select")
                 if selects:
-                    Select(selects[0]).select_by_visible_text(cliente_alvo)
-            except Exception as e_cli:
-                if log_container:
-                    log_container.warning(f"⚠️ Mantido cliente pré-selecionado ({e_cli})")
-
-        if combustivel_alvo and combustivel_alvo.upper() != "TODOS":
+                    Select(selects[0]).select_by_visible_text("TEXTO")
+        except Exception as e_exp:
             if log_container:
-                log_container.info(f"⛽ Aplicando filtro de Combustível/Empresa: '{combustivel_alvo}'...")
-            try:
-                btn_lookup = driver.find_elements(By.XPATH, "//div[contains(@class,'lookup')]//button[contains(@class,'input-group-append')]")
-                if btn_lookup:
-                    driver.execute_script("arguments[0].click();", btn_lookup[0])
-                    time.sleep(1.5)
+                log_container.warning(f"⚠️ Aviso ao selecionar tipo de exportação: {e_exp}")
 
-                    opcao_combustivel = wait.until(EC.element_to_be_clickable((
-                        By.XPATH, f"//*[contains(text(),'{combustivel_alvo}')]"
-                    )))
-                    driver.execute_script("arguments[0].click();", opcao_combustivel)
-                    time.sleep(1)
-            except Exception as e_comb:
-                if log_container:
-                    log_container.warning(f"⚠️ Mantido combustível pré-selecionado ({e_comb})")
+        # 5. FILTROS DE CLIENTE, COMBUSTÍVEL E DATAS
+        if cliente_alvo:
+            try:
+                selects_cli = driver.find_elements(By.TAG_NAME, "select")
+                if selects_cli:
+                    Select(selects_cli[0]).select_by_visible_text(cliente_alvo)
+            except Exception: pass
 
         if log_container:
-            log_container.info("📅 Inserindo o período das datas...")
+            log_container.info("📅 Preenchendo o período das datas...")
 
         inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
-        if not inputs_modal:
-            alternar_para_frame_do_modal()
-            inputs_modal = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
-
-        campo_dt_inicio = None
-        campo_dt_fim = None
-
         if len(inputs_modal) >= 2:
-            for inp in inputs_modal:
-                val = inp.get_attribute("value") or ""
-                if "/" in val or "01" in val:
-                    if not campo_dt_inicio:
-                        campo_dt_inicio = inp
-                    else:
-                        campo_dt_fim = inp
-
-            if not campo_dt_inicio or not campo_dt_fim:
-                campo_dt_inicio = inputs_modal[-2]
-                campo_dt_fim = inputs_modal[-1]
-        elif len(inputs_modal) == 1:
-            campo_dt_inicio = inputs_modal[0]
-            campo_dt_fim = inputs_modal[0]
+            preencher_campo_js(driver, inputs_modal[-2], data_inicio)
+            preencher_campo_js(driver, inputs_modal[-1], data_fim)
         else:
             driver.execute_script("""
-                var inputs = document.querySelectorAll("input");
-                var dt_inputs = [];
-                inputs.forEach(function(i) {
-                    if (i.type === 'text' || !i.type) dt_inputs.push(i);
-                });
-                if (dt_inputs.length >= 2) {
-                    dt_inputs[dt_inputs.length - 2].value = arguments[0];
-                    dt_inputs[dt_inputs.length - 1].value = arguments[1];
-                } else if (dt_inputs.length === 1) {
-                    dt_inputs[0].value = arguments[0];
+                var inputs = document.querySelectorAll("input[type='text'], input:not([type])");
+                if (inputs.length >= 2) {
+                    inputs[inputs.length - 2].value = arguments[0];
+                    inputs[inputs.length - 1].value = arguments[1];
                 }
             """, data_inicio, data_fim)
 
-        if campo_dt_inicio:
-            preencher_campo_js(driver, campo_dt_inicio, data_inicio)
-        if campo_dt_fim:
-            preencher_campo_js(driver, campo_dt_fim, data_fim)
-            
         time.sleep(1.5)
 
-        # 5. DISPARO E AGUARDO DA GERAÇÃO DO RELATÓRIO
+        # 6. CLIQUE NO BOTÃO VISUALIZAR PARA DISPARAR DOWNLOAD DIRETO
         if log_container:
-            log_container.info("🖨️ Disparando a geração do arquivo PDF...")
+            log_container.info("🖨️ Disparando a exportação direta do relatório...")
 
-        janelas_antes = set(driver.window_handles)
+        script_clique_vis = """
+            var btn = document.querySelector("#Img_Visualizar") || 
+                      document.querySelector("[id*='Visualizar']") ||
+                      Array.from(document.querySelectorAll("button, a, div")).find(e => e.textContent.includes("Visualizar"));
+            if (btn) {
+                btn.click();
+                return true;
+            }
+            return false;
+        """
+        driver.execute_script(script_clique_vis)
 
-        def disparar_clique_visualizar():
-            script_busca_e_clique = """
-                var candidatos = [];
-                
-                var elemId = document.querySelector("#Img_Visualizar") || document.querySelector("[id*='Visualizar']");
-                if (elemId) candidatos.push(elemId);
-                
-                var todos = document.querySelectorAll("button, a, div, img, input, span, td");
-                todos.forEach(function(el) {
-                    var txt = (el.textContent || el.value || el.alt || el.title || el.src || "").toLowerCase();
-                    if (txt.includes("visualizar")) {
-                        candidatos.push(el);
-                    }
-                });
-                
-                for (var i = 0; i < candidatos.length; i++) {
-                    try {
-                        candidatos[i].click();
-                        return true;
-                    } catch(e) {}
-                }
-                
-                if (typeof ebfFormPreview === 'function') {
-                    ebfFormPreview();
-                    return true;
-                }
-                
-                return false;
-            """
-            
-            driver.switch_to.default_content()
-            if driver.execute_script(script_busca_e_clique):
-                return True
+        if log_container:
+            log_container.info("⏳ Aguardando o download direto do arquivo...")
 
-            frames = driver.find_elements(By.TAG_NAME, "iframe")
-            for f in frames:
-                try:
-                    driver.switch_to.default_content()
-                    driver.switch_to.frame(f)
-                    if driver.execute_script(script_busca_e_clique):
-                        return True
-                except Exception:
-                    continue
-
-            return False
-
-        for _ in range(10):
-            if disparar_clique_visualizar():
+        # 7. CAPTURA DO ARQUIVO BAIXADO NA PASTA TEMPORÁRIA
+        caminho_arquivo_baixado = None
+        for _ in range(30):
+            time.sleep(1)
+            arquivos = glob.glob(os.path.join(download_dir, "*.*"))
+            # Filtra apenas os arquivos gerados (ignora temporários do crdownload)
+            validos = [f for f in arquivos if not f.endswith('.crdownload') and not f.endswith('.tmp')]
+            if validos:
+                caminho_arquivo_baixado = validos[0]
                 break
-            time.sleep(1)
 
-        if log_container:
-            log_container.info("⏳ Aguardando o Liveposto processar e abrir a nova janela do PDF...")
-
-        # 6. CAPTURA DA URL DO POP-UP DO PDF
-        url_pdf_popup = None
-        
-        for _ in range(35):
-            janelas_atuais = set(driver.window_handles)
-            novas_janelas = janelas_atuais - janelas_antes
-            
-            if novas_janelas:
-                driver.switch_to.window(list(novas_janelas)[0])
-                time.sleep(2)
-                url_pdf_popup = driver.current_url
-                if ".pdf" in url_pdf_popup.lower() or "WFRReports" in url_pdf_popup:
-                    break
-            time.sleep(1)
-
-        if log_container:
-            log_container.info("📥 Baixando arquivo PDF retornado...")
-
-        caminho_pdf_baixado = None
-
-        # ESTRATÉGIA A: EXECUTAR FETCH BINÁRIO DIRETAMENTE NO CONTEXTO DO NAVEGADOR (Bypassa visualizador PDF)
-        if url_pdf_popup:
-            try:
-                js_fetch_pdf = """
-                    var pdfUrl = arguments[0];
-                    var callback = arguments[1];
-                    fetch(pdfUrl, { credentials: 'include' })
-                        .then(response => response.arrayBuffer())
-                        .then(buffer => {
-                            var binary = '';
-                            var bytes = new Uint8Array(buffer);
-                            var len = bytes.byteLength;
-                            for (var i = 0; i < len; i++) {
-                                binary += String.fromCharCode(bytes[i]);
-                            }
-                            callback(window.btoa(binary));
-                        })
-                        .catch(err => callback(null));
-                """
-                driver.set_script_timeout(30)
-                pdf_b64 = driver.execute_async_script(js_fetch_pdf, url_pdf_popup)
-                
-                if pdf_b64:
-                    pdf_bytes = base64.b64decode(pdf_b64)
-                    caminho_dest = os.path.join(download_dir, "relatorio_liveposto.pdf")
-                    with open(caminho_dest, "wb") as f:
-                        f.write(pdf_bytes)
-                    caminho_pdf_baixado = caminho_dest
-            except Exception as e_b64:
-                if log_container:
-                    log_container.warning(f"⚠️ Erro ao extrair PDF via JS fetch: {e_b64}")
-
-        # ESTRATÉGIA B: REQUISIÇÃO REQUESTS COM REFERER EXATO DO POPUP
-        if not caminho_pdf_baixado and url_pdf_popup:
-            try:
-                sessao = requests.Session()
-                for cookie in driver.get_cookies():
-                    sessao.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain', ''))
-                
-                headers = {
-                    "User-Agent": driver.execute_script("return navigator.userAgent;"),
-                    "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": "https://posto.liveposto.com.br/"
-                }
-                
-                resposta = sessao.get(url_pdf_popup, headers=headers, timeout=40)
-                if resposta.status_code == 200 and len(resposta.content) > 1000:
-                    caminho_dest = os.path.join(download_dir, "relatorio_liveposto.pdf")
-                    with open(caminho_dest, "wb") as f:
-                        f.write(resposta.content)
-                    caminho_pdf_baixado = caminho_dest
-            except Exception as e_http:
-                if log_container:
-                    log_container.warning(f"⚠️ Erro na requisição direta HTTP: {e_http}")
-
-        # ESTRATÉGIA C: VARREDURA DE DOWNLOADS GERADOS PELO NAVEGADOR
-        if not caminho_pdf_baixado:
-            for _ in range(15):
-                time.sleep(1)
-                arquivos = glob.glob(os.path.join(download_dir, "*.pdf"))
-                if arquivos:
-                    caminho_pdf_baixado = arquivos[0]
-                    break
-
-        return caminho_pdf_baixado
+        return caminho_arquivo_baixado
 
     except Exception as e:
         erro_detalhado = traceback.format_exc()
@@ -1059,7 +930,7 @@ if verificar_senha():
         if metodo_origem == "📁 Upload Manual de PDF":
             uploaded_file = st.file_uploader("Selecione o arquivo PDF de abastecimento", type=["pdf"])
             if uploaded_file:
-                dados_df = extrair_dados_pdf(uploaded_file)
+                dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
                 st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
 
         else:
@@ -1077,7 +948,7 @@ if verificar_senha():
             dt_inicio = c_dt1.date_input("Data Inicial")
             dt_fim = c_dt2.date_input("Data Final")
 
-            if st.button("📥 Baixar PDF do Liveposto", use_container_width=True):
+            if st.button("📥 Baixar PDF/Relatório do Liveposto", use_container_width=True):
                 if not pass_liveposto:
                     st.error("Informe a senha do Liveposto.")
                 else:
@@ -1085,7 +956,7 @@ if verificar_senha():
                         str_inicio = dt_inicio.strftime("%d/%m/%Y")
                         str_fim = dt_fim.strftime("%d/%m/%Y")
                         
-                        caminho_pdf = baixar_pdf_liveposto(
+                        caminho_relatorio = baixar_relatorio_liveposto(
                             empresa_liveposto,
                             cliente_liveposto,
                             combustivel_liveposto,
@@ -1096,13 +967,12 @@ if verificar_senha():
                             log_container=st
                         )
 
-                        if caminho_pdf and os.path.exists(caminho_pdf):
-                            with open(caminho_pdf, "rb") as f:
-                                dados_df = extrair_dados_pdf(f)
+                        if caminho_relatorio and os.path.exists(caminho_relatorio):
+                            dados_df = extrair_dados_txt_ou_pdf(caminho_relatorio)
                             st.session_state["dados_df_carregados"] = dados_df
-                            st.success(f"PDF baixado! **{len(dados_df)}** abastecimentos identificados.")
+                            st.success(f"Relatório baixado! **{len(dados_df)}** abastecimentos identificados.")
                         else:
-                            st.error("Falha ao baixar o PDF do Liveposto.")
+                            st.error("Falha ao baixar o relatório do Liveposto.")
 
             if "dados_df_carregados" in st.session_state and dados_df is None:
                 dados_df = st.session_state["dados_df_carregados"]
