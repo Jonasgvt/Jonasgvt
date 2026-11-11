@@ -71,7 +71,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# FUNÇÕES AUXILIARES E PARSER DE ARQUIVO
+# FUNÇÕES AUXILIARES E PARSER DE ARQUIVO (TXT / PDF)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -88,10 +88,11 @@ def limpa_numero(val_str):
         return 0.0
 
 def extrair_dados_txt_ou_pdf(caminho_ou_stream):
-    """Lê dados de abastecimento tanto de arquivos TXT/CSV quanto de arquivos PDF."""
+    """Extrai os dados de abastecimento lendo arquivos TXT exportados do Liveposto ou PDFs."""
     registos = []
-    
     lines = []
+
+    # 1. Leitura do conteúdo (Suporta caminho em disco ou Stream de upload)
     if isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
         if caminho_ou_stream.lower().endswith('.pdf'):
             reader = pypdf.PdfReader(caminho_ou_stream)
@@ -100,47 +101,76 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
         else:
             with open(caminho_ou_stream, 'r', encoding='latin1', errors='ignore') as f:
                 lines = f.readlines()
-    else:
-        reader = pypdf.PdfReader(caminho_ou_stream)
-        for page in reader.pages:
-            lines.extend(page.extract_text().split('\n'))
+    elif hasattr(caminho_ou_stream, 'read'):
+        try:
+            reader = pypdf.PdfReader(caminho_ou_stream)
+            for page in reader.pages:
+                lines.extend(page.extract_text().split('\n'))
+        except Exception:
+            caminho_ou_stream.seek(0)
+            lines = [l.decode('latin1', errors='ignore') for l in caminho_ou_stream.readlines()]
 
-    for i, line in enumerate(lines):
-        line_clean = line.strip()
-        if re.match(r'^\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}\s+\d+', line_clean):
-            hdr = line_clean
-            nxt = lines[i+1].strip() if i+1 < len(lines) else ""
+    # 2. Processamento por Expressão Regular ajustada para TXT do Liveposto
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Identifica linhas que começam com Data DD/MM/YY ou DD/MM/YYYY
+        m_data = re.match(r'^(\d{2}/\d{2}/\d{2,4})\s*(\d{1,2}:\d{2}:\d{2})?(\d{3,6})?\s+(.*)', line)
+        if m_data:
+            dt_str, hr_raw, cupom_raw, resto_linha = m_data.groups()
             
-            m_h = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+(\d+)\s+(.*)', hdr)
-            if not m_h:
-                continue
-            dt, tm, cupom, rest = m_h.groups()
+            # Normalização do ano na data (ex: 09/11/20 -> 09/11/2026)
+            partes_dt = dt_str.split('/')
+            if len(partes_dt[2]) == 2:
+                dt_str = f"{partes_dt[0]}/{partes_dt[1]}/20{partes_dt[2]}"
 
-            m_placa = re.match(r'^([A-Z0-9\-]+)\s+(.*)', rest)
+            # Captura a Placa (ex: MVJ-9C0, ORJ-892, RGS-7G4)
+            m_placa = re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', resto_linha)
             placa = m_placa.group(1).replace('-', '') if m_placa else ""
-            rest2 = m_placa.group(2) if m_placa else rest
 
-            m_n = re.search(r'^(.*?)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)$', nxt)
-            if m_n:
-                prod, vlr_unit, quant, total = m_n.groups()
-            else:
-                prod = nxt
-                vlr_unit, quant, total = "", "", ""
+            # Próxima linha contém o Produto e Preço Unitário
+            nxt_line = lines[i+1].strip() if i+1 < len(lines) else ""
+            
+            # Captura de Valores Numéricos (Quantidade, Unitário, Total Líquido)
+            numeros_nxt = re.findall(r'(\d+(?:[\.,]\d+)?)', nxt_line)
+            numeros_linha = re.findall(r'(\d+(?:[\.,]\d+)?)', resto_linha)
 
-            km_match = re.search(r'(\d{1,3}(?:\.\d{3})+|\d{3,6})', rest2)
-            km = km_match.group(1) if km_match else ""
+            vlr_unit = "0,00"
+            quantidade = "0,00"
+            valor_total = "0,00"
+            km = ""
 
-            registos.append({
-                'data': dt,
-                'hora': tm,
-                'cupom': cupom,
-                'placa': placa,
-                'produto': prod,
-                'quantidade': quant,
-                'valor_unitario': vlr_unit,
-                'valor_total': total,
-                'km': km
-            })
+            if numeros_nxt:
+                vlr_unit = numeros_nxt[0]
+                if len(numeros_nxt) >= 2:
+                    quantidade = numeros_nxt[1]
+                if len(numeros_nxt) >= 3:
+                    valor_total = numeros_nxt[-1]
+
+            if quantidade == "0,00" and numeros_linha:
+                quantidade = numeros_linha[0]
+                if len(numeros_linha) >= 2:
+                    valor_total = numeros_linha[1]
+
+            # Captura do Odômetro (KM Atual)
+            m_km = re.search(r'(\d{2,3}\.\d{3}|\d{5,6})', resto_linha)
+            if m_km:
+                km = m_km.group(1).replace('.', '')
+
+            if placa:
+                registos.append({
+                    'data': dt_str,
+                    'hora': hr_raw if hr_raw else "08:00:00",
+                    'cupom': cupom_raw if cupom_raw else "0",
+                    'placa': placa,
+                    'produto': "DIESEL B S10 ADITIVADO",
+                    'quantidade': quantidade,
+                    'valor_unitario': vlr_unit,
+                    'valor_total': valor_total,
+                    'km': km
+                })
+        i += 1
 
     return pd.DataFrame(registos)
 
@@ -189,7 +219,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (TEXTO / DIRECT)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -231,7 +261,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
     except Exception:
         driver = webdriver.Chrome(options=options)
 
-    # Permite download automático no Headless
+    # CDP para liberar downloads irrestritos em Headless
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": download_dir
@@ -340,7 +370,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(5)
 
-        # 3. INTERAÇÃO E ENQUADRAMENTO NO MODAL WEBRUN
+        # 3. INTERAÇÃO COM O MODAL WEBRUN
         def alternar_para_frame_do_modal():
             if len(driver.window_handles) > 1:
                 driver.switch_to.window(driver.window_handles[-1])
@@ -362,7 +392,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         alternar_para_frame_do_modal()
 
-        # 4. SELEÇÃO DO TIPO DE EXPORTAÇÃO (TEXTO / EXCEL)
+        # 4. SELEÇÃO DO TIPO DE EXPORTAÇÃO (TEXTO)
         if log_container:
             log_container.info("📄 Alterando o Tipo de Exportação para TEXTO...")
 
@@ -392,7 +422,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
             if log_container:
                 log_container.warning(f"⚠️ Aviso ao selecionar tipo de exportação: {e_exp}")
 
-        # 5. FILTROS DE CLIENTE, COMBUSTÍVEL E DATAS
+        # 5. FILTROS E DATAS
         if cliente_alvo:
             try:
                 selects_cli = driver.find_elements(By.TAG_NAME, "select")
@@ -418,7 +448,7 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
 
         time.sleep(1.5)
 
-        # 6. CLIQUE NO BOTÃO VISUALIZAR PARA DISPARAR DOWNLOAD DIRETO
+        # 6. CLIQUE NO BOTÃO VISUALIZAR PARA DISPARAR DOWNLOAD DIRETO DO TXT
         if log_container:
             log_container.info("🖨️ Disparando a exportação direta do relatório...")
 
@@ -437,12 +467,11 @@ def baixar_relatorio_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario,
         if log_container:
             log_container.info("⏳ Aguardando o download direto do arquivo...")
 
-        # 7. CAPTURA DO ARQUIVO BAIXADO NA PASTA TEMPORÁRIA
+        # 7. CAPTURA DO ARQUIVO NA PASTA TEMPORÁRIA
         caminho_arquivo_baixado = None
         for _ in range(30):
             time.sleep(1)
             arquivos = glob.glob(os.path.join(download_dir, "*.*"))
-            # Filtra apenas os arquivos gerados (ignora temporários do crdownload)
             validos = [f for f in arquivos if not f.endswith('.crdownload') and not f.endswith('.tmp')]
             if validos:
                 caminho_arquivo_baixado = validos[0]
@@ -921,14 +950,14 @@ if verificar_senha():
         
         metodo_origem = st.radio(
             "Selecione como deseja obter o relatório:",
-            ["📁 Upload Manual de PDF", "🌐 Baixar Direto do Liveposto"],
+            ["📁 Upload Manual de PDF/TXT", "🌐 Baixar Direto do Liveposto"],
             horizontal=True
         )
 
         dados_df = None
 
-        if metodo_origem == "📁 Upload Manual de PDF":
-            uploaded_file = st.file_uploader("Selecione o arquivo PDF de abastecimento", type=["pdf"])
+        if metodo_origem == "📁 Upload Manual de PDF/TXT":
+            uploaded_file = st.file_uploader("Selecione o arquivo de abastecimento (PDF ou TXT)", type=["pdf", "txt"])
             if uploaded_file:
                 dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
                 st.success(f"Ficheiro lido! **{len(dados_df)}** abastecimentos identificados.")
@@ -994,7 +1023,7 @@ if verificar_senha():
 
         if st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True):
             if dados_df is None or dados_df.empty:
-                st.error("Carregue um arquivo PDF ou faça o download via Liveposto primeiro.")
+                st.error("Carregue um arquivo PDF/TXT ou faça o download via Liveposto primeiro.")
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ na barra lateral.")
             else:
