@@ -175,7 +175,7 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (TRATAMENTO DE POPUPS & LOOKUP)
+# AUTOMAÇÃO DE DOWNLOAD DO LIVEPOSTO (COM NAVEGAÇÃO JS AVANÇADA)
 # ---------------------------------------------------------
 def preencher_campo_js(driver, elemento, valor):
     driver.execute_script("""
@@ -220,7 +220,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         driver = webdriver.Chrome(options=options)
 
     driver.set_page_load_timeout(40)
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 25)
 
     try:
         if log_container:
@@ -234,7 +234,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             driver.switch_to.frame(iframes[0])
 
         if log_container:
-            log_container.info("✍️ Preenchendo credenciais no Liveposto...")
+            log_container.info("✍️ Preenchendo credenciais...")
 
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "input")))
 
@@ -277,22 +277,39 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         time.sleep(6)
         driver.switch_to.default_content()
 
-        # 2. SELEÇÃO DO MENU LATERAL
+        # 2. ABERTURA DO RELATÓRIO VIA INJEÇÃO JS DIRETA
         if log_container:
-            log_container.info("📂 Navegando para a emissão de relatórios...")
+            log_container.info("📂 Abrindo o formulário de Vendas por Veículo...")
 
-        xpath_menu = (
-            "//a[contains(@id,'MenuLateralGamma-item-50925')] | "
-            "//a[@webrun-menu-action-type='form' and contains(@style,'500000556')] | "
-            "//*[contains(text(),'Vendas por Veiculo') or contains(text(),'Vendas por Veículo')] | "
-            "//span[contains(@class,'menu-item-text') and contains(.,'Rel.')]"
-        )
-        
-        menu_relatorio = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_menu)))
-        driver.execute_script("arguments[0].click();", menu_relatorio)
-        time.sleep(4)
+        # Tenta acionar via chamada nativa do Webrun ou varredura DOM
+        aberto = driver.execute_script("""
+            // Método 1: Busca elemento a no DOM principal por ID ou Atributo
+            var elem = document.querySelector("#MenuLateralGamma-item-50925") || 
+                       document.querySelector("[webrun-menu-action-type='form']") ||
+                       document.querySelector("a[href*='500000556']");
+            if (elem) {
+                elem.scrollIntoView(true);
+                elem.click();
+                return true;
+            }
+            // Método 2: Chamada do motor de formulários do Webrun
+            if (typeof ebfFormOpen === 'function') {
+                ebfFormOpen('500000556', '');
+                return true;
+            }
+            return false;
+        """)
 
-        # 3. INTERAÇÃO COM A MODAL / POPUP (IFRAME DO WEBRUN)
+        if not aberto:
+            # Fallback caso não seja encontrado via JS estático
+            link_rel = wait.until(EC.presence_of_element_located((
+                By.XPATH, "//a[contains(@id,'50925') or contains(@href,'500000556') or contains(.,'Vendas por Ve')] | //*[contains(text(),'Vendas por Ve')]"
+            )))
+            driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", link_rel)
+
+        time.sleep(5)
+
+        # Switche para a janela/iframe do modal aberto
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
@@ -300,10 +317,10 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if frames_modal:
             driver.switch_to.frame(frames_modal[-1])
 
-        # SELEÇÃO DO CLIENTE NO COMBOBOX
+        # 3. TRATAMENTO DOS CAMPOS DO RELATÓRIO
         if cliente_alvo:
             if log_container:
-                log_container.info(f"🏢 Selecionando o Cliente: '{cliente_alvo}'...")
+                log_container.info(f"🏢 Selecionando Cliente: '{cliente_alvo}'...")
             try:
                 selects = driver.find_elements(By.TAG_NAME, "select")
                 if selects:
@@ -318,18 +335,15 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
                 if log_container:
                     log_container.warning(f"⚠️ Cliente mantido no valor padrão: {e_c}")
 
-        # SELEÇÃO DO COMBUSTÍVEL / EMPRESA (LOOKUP COM ROLAGEM)[cite: 18]
-        if combustivel_alvo and combustivel_alvo != "TODOS":
+        if combustivel_alvo and combustivel_alvo.upper() != "TODOS":
             if log_container:
                 log_container.info(f"⛽ Selecionando Combustível/Empresa: '{combustivel_alvo}'...")
             try:
-                # Clica no botão append do lookup (ícone com setas)[cite: 18]
                 btn_lookup = driver.find_elements(By.XPATH, "//div[contains(@class,'lookup')]//button[contains(@class,'input-group-append')]")
                 if btn_lookup:
                     driver.execute_script("arguments[0].click();", btn_lookup[0])
                     time.sleep(1.5)
 
-                    # Localiza a opção especificada na lista suspensa[cite: 18]
                     opcao_combustivel = wait.until(EC.element_to_be_clickable((
                         By.XPATH, f"//*[contains(text(),'{combustivel_alvo}')]"
                     )))
@@ -341,7 +355,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         # 4. PREENCHIMENTO DO PERÍODO
         if log_container:
-            log_container.info("📅 Configurando o período das datas...")
+            log_container.info("📅 Ajustando o período das datas...")
 
         inputs_modal = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//input[@type='text']")))
         
@@ -364,7 +378,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         preencher_campo_js(driver, campo_dt_fim, data_fim)
         time.sleep(1)
 
-        # 5. GERAR RELATÓRIO PDF (BOTÃO VISUALIZAR COM ÍCONE DE IMPRESSORA)[cite: 18]
+        # 5. GERAR PDF
         if log_container:
             log_container.info("🖨️ Disparando a geração do PDF...")
 
@@ -376,7 +390,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         driver.execute_script("arguments[0].click();", btn_visualizar)
         time.sleep(5)
 
-        # Trata popups de impressão recém-abertos[cite: 18]
         janelas_depois = driver.window_handles
         if len(janelas_depois) > len(janelas_antes):
             driver.switch_to.window(janelas_depois[-1])
@@ -385,7 +398,6 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         if log_container:
             log_container.info("📥 Concluindo o download do arquivo PDF...")
 
-        # 6. VERIFICA O ARQUIVO BAIXADO
         caminho_pdf_baixado = None
         for _ in range(35):
             time.sleep(1)
