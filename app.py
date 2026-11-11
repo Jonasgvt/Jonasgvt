@@ -203,7 +203,8 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True
+        "plugins.always_open_pdf_externally": True,
+        "pdfjs.disabled": True
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -220,6 +221,12 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
         driver = webdriver.Chrome(service=service, options=options)
     except Exception:
         driver = webdriver.Chrome(options=options)
+
+    # Ativa o download automático via Chrome DevTools Protocol em modo headless
+    driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+        "behavior": "allow",
+        "downloadPath": download_dir
+    })
 
     driver.set_page_load_timeout(40)
     wait = WebDriverWait(driver, 20)
@@ -473,7 +480,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
             )))
             driver.execute_script("arguments[0].click();", btn_visualizar)
 
-        time.sleep(5)
+        time.sleep(6)
 
         # 7. TRATAMENTO DA NOVA ABA/JANELA DO POPUP PDF
         janelas_depois = set(driver.window_handles)
@@ -483,7 +490,7 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         if novas_janelas:
             driver.switch_to.window(list(novas_janelas)[0])
-            time.sleep(2)
+            time.sleep(3)
             url_pdf_popup = driver.current_url
 
         if log_container:
@@ -491,23 +498,30 @@ def baixar_pdf_liveposto(empresa, cliente_alvo, combustivel_alvo, usuario, senha
 
         caminho_pdf_baixado = None
 
-        # Estratégia 1: Baixar via requisição HTTP direta da URL do PDF no Pop-up
+        # Tentativa 1: Baixar via biblioteca requests utilizando toda a sessão autenticada do Chromium
         if url_pdf_popup and ".pdf" in url_pdf_popup.lower():
             try:
-                cookies = {cookie['name']: cookie['value'] for cookie in driver.get_cookies()}
-                headers = {"User-Agent": driver.execute_script("return navigator.userAgent;")}
+                sessao = requests.Session()
+                for cookie in driver.get_cookies():
+                    sessao.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain', ''))
                 
-                resposta = requests.get(url_pdf_popup, cookies=cookies, headers=headers, timeout=30)
-                if resposta.status_code == 200:
+                headers = {
+                    "User-Agent": driver.execute_script("return navigator.userAgent;"),
+                    "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": driver.current_url
+                }
+                
+                resposta = sessao.get(url_pdf_popup, headers=headers, timeout=30)
+                if resposta.status_code == 200 and len(resposta.content) > 1000:
                     caminho_dest = os.path.join(download_dir, "relatorio_liveposto.pdf")
                     with open(caminho_dest, "wb") as f:
                         f.write(resposta.content)
                     caminho_pdf_baixado = caminho_dest
             except Exception as e_http:
                 if log_container:
-                    log_container.warning(f"⚠️ Erro ao baixar por URL direta: {e_http}")
+                    log_container.warning(f"⚠️ Erro no download direto via HTTP: {e_http}")
 
-        # Estratégia 2: Varredura de download da pasta temporária
+        # Tentativa 2: Varredura dos downloads gerados pelo comando CDP no diretório temporário
         if not caminho_pdf_baixado:
             for _ in range(30):
                 time.sleep(1)
