@@ -21,66 +21,138 @@ from selenium.common.exceptions import (
 )
 
 # ---------------------------------------------------------
-# CONFIGURAÇÃO DE PÁGINA E ESTILO LIMPO (MODO CLARO INTEGRADO)
+# CONFIGURAÇÃO DA PÁGINA E DESIGN SYSTEM (NETLIFY / VERCEL STYLE)
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Gestão de Abastecimentos ZUQ",
-    page_icon="⛽",
-    layout="wide"
+    page_title="ZUQ Auto - Central de Abastecimentos",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-# CSS Totalmente Claro sem Conflito de Cores
+# Estilização CSS completa para simular Web App Nativo (Netlify Style)
 st.markdown("""
     <style>
-    /* Forçar tema claro universal */
-    :root {
-        --background-color: #FFFFFF;
-        --secondary-background-color: #F8FAFC;
-        --text-color: #0F172A;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    /* Reset global de fonte e fundo */
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
-    
+
     .stApp {
-        background-color: #F8FAFC;
-        color: #0F172A;
+        background-color: #F8FAFC !important;
+        color: #0F172A !important;
     }
 
     #MainMenu, footer, header { visibility: hidden; }
-
-    /* Ajuste de Botões */
-    .stButton > button {
-        background-color: #2563EB !important;
-        color: #FFFFFF !important;
-        font-weight: 600 !important;
-        border: none !important;
-        border-radius: 6px !important;
-        height: 2.8rem !important;
-    }
-
-    .stButton > button:hover {
-        background-color: #1D4ED8 !important;
-    }
-
-    /* Cards Brancos */
+    
     .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 1280px !important;
+    }
+
+    /* Top Bar / Header App */
+    .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 1rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid #E2E8F0;
     }
     
-    /* Container de métricas sem caixa escura */
+    .app-brand {
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #0F172A;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .app-badge {
+        background-color: #EFF6FF;
+        color: #2563EB;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 0.2rem 0.6rem;
+        border-radius: 9999px;
+        border: 1px solid #DBEAFE;
+    }
+
+    /* Cards Estilo Netlify */
+    .netlify-card {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1.25rem;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.02);
+    }
+
+    .card-title-text {
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #0F172A;
+        margin-bottom: 0.8rem;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+
+    /* Input & Form Styling */
+    div[data-baseweb="input"] {
+        background-color: #FFFFFF !important;
+        border-radius: 6px !important;
+    }
+
+    /* Metrics Styling */
     div[data-testid="stMetric"] {
         background-color: #FFFFFF !important;
         border: 1px solid #E2E8F0 !important;
-        border-radius: 8px !important;
+        border-radius: 10px !important;
         padding: 0.8rem 1rem !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02) !important;
     }
 
     div[data-testid="stMetricLabel"] {
         color: #64748B !important;
+        font-size: 0.75rem !important;
         font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
     }
 
     div[data-testid="stMetricValue"] {
         color: #0F172A !important;
+        font-size: 1.5rem !important;
+        font-weight: 700 !important;
+    }
+
+    /* Botão Principal Estilo SaaS */
+    .stButton > button {
+        background-color: #0066FF !important;
+        color: #FFFFFF !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+        border: none !important;
+        border-radius: 8px !important;
+        height: 2.8rem !important;
+        transition: all 0.15s ease !important;
+        box-shadow: 0 1px 2px rgba(0, 102, 255, 0.2) !important;
+    }
+
+    .stButton > button:hover {
+        background-color: #0052CC !important;
+        box-shadow: 0 4px 8px rgba(0, 102, 255, 0.25) !important;
+    }
+
+    /* Terminal de Logs Estilo Netlify Build Logs */
+    div[data-testid="stVerticalBlock"] > div[style*="height"] {
+        border-radius: 8px !important;
+        border: 1px solid #E2E8F0 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -97,26 +169,28 @@ def verificar_senha():
     if st.session_state["autenticado"]:
         return True
 
-    st.title("🔒 Gestão de Abastecimentos ZUQ")
-    st.write("Introduza a senha de acesso para continuar.")
+    st.markdown('<div style="text-align: center; padding-top: 5rem;">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size: 1.8rem; font-weight: 700; color: #0F172A;">⚡ ZUQ Auto</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size: 0.9rem; color: #64748B; margin-bottom: 2rem;">Acesso restrito à plataforma de automação corporativa.</div>', unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2, col3 = st.columns([1.2, 1, 1.2])
     with col2:
         with st.form("form_login"):
-            senha_digitada = st.text_input("Senha", type="password")
-            btn_login = st.form_submit_button("🔑 Entrar", use_container_width=True)
+            senha_digitada = st.text_input("Chave de Acesso", type="password", placeholder="Digite sua senha")
+            btn_login = st.form_submit_button("Entrar no Painel", use_container_width=True)
 
             if btn_login:
                 if senha_digitada == SENHA_CORRETA:
                     st.session_state["autenticado"] = True
                     st.rerun()
                 else:
-                    st.error("❌ Senha incorreta.")
+                    st.error("❌ Credencial inválida.")
+    st.markdown('</div>', unsafe_allow_html=True)
                     
     return False
 
 # ---------------------------------------------------------
-# LEITURA DE ARQUIVOS (TXT / PDF)
+# FUNÇÕES DE LEITURA (TXT / PDF)
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -229,7 +303,7 @@ def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
         driver.get(url)
     except TimeoutException:
         if log_container:
-            log_container.warning(f"⏳ Interrompendo carregamentos...")
+            log_container.warning(f"⏳ Interrompendo requisições em {url}...")
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
@@ -247,14 +321,14 @@ def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container
         except excecoes_capturadas as e:
             tempo_espera = intervalo_base * (2 ** (tentativa - 1))
             if log_container:
-                log_container.warning(f"⚠️ Instabilidade. Tentativa {tentativa}/{max_tentativas}...")
+                log_container.warning(f"⚠️ Tentativa {tentativa}/{max_tentativas}...")
             
             if tentativa == max_tentativas:
                 raise e
             time.sleep(tempo_espera)
 
 # ---------------------------------------------------------
-# CHECAGEM DE DUPLICATAS
+# CHECAGEM DE DUPLICATAS ROBUSTA
 # ---------------------------------------------------------
 def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litros, preco, ultima_placa_filtrada, log_container):
     try:
@@ -296,7 +370,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
                 
                 if not opcoes:
-                    log_container.warning(f"⚠️ Placa {placa} não cadastrada no ZUQ.")
+                    log_container.warning(f"⚠️ Placa {placa} não encontrada no ZUQ.")
                     btn_cancelar = driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]")
                     btn_cancelar.click()
                     time.sleep(0.8)
@@ -356,7 +430,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                     linhas_duplicadas.append(linha)
 
         if len(linhas_duplicadas) >= 2:
-            log_container.warning(f"🚨 Réplica detectada em {data} ({litros}L). Removendo...")
+            log_container.warning(f"🚨 Duplicado em {data} ({litros}L). Removendo...")
             linha_para_remover = linhas_duplicadas[0]
 
             try:
@@ -384,10 +458,10 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
                 time.sleep(1.2)
                 return True, True, ""
             except Exception as e_rem:
-                log_container.error(f"❌ Erro ao remover duplicado: {e_rem}")
+                log_container.error(f"❌ Erro ao remover: {e_rem}")
 
         elif len(linhas_duplicadas) == 1:
-            log_container.info(f"🔍 Registro {data} ({litros}L) já existente. Pulando...")
+            log_container.info(f"🔍 Abastecimento em {data} ({litros}L) já existe. Ignorando...")
             return True, True, placa
 
     except Exception:
@@ -396,7 +470,7 @@ def tratar_duplicados_se_existirem(driver, wait, base_url, placa, data, km, litr
     return True, False, placa
 
 # ---------------------------------------------------------
-# AUTOMAÇÃO DE LANÇAMENTO
+# AUTOMAÇÃO DE LANÇAMENTO ZUQ
 # ---------------------------------------------------------
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar, metric_lancados, metric_ignorados):
     df_relatorio = df.copy()
@@ -436,7 +510,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
     total_registros = len(df)
 
     try:
-        log_container.info("🌐 Conectando ao ZUQ...")
+        log_container.info("🌐 Conectando à instância ZUQ...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -459,7 +533,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 campo_senha.send_keys(Keys.ENTER)
 
         executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        log_container.info("🔐 Autenticado com sucesso!")
+        log_container.info("🔐 Autenticação concluída com sucesso.")
         time.sleep(3)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
@@ -483,7 +557,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     log_container=log_container
                 )
             except Exception as e_dup:
-                log_container.error(f"❌ Erro na placa {row['placa']}: {e_dup}")
+                log_container.error(f"❌ Erro ao validar {row['placa']}: {e_dup}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
@@ -507,7 +581,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Duplicado'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Registro já existente'
+                df_relatorio.at[idx, 'observacao'] = 'Registro já existe'
                 continue
 
             def abrir_formulario():
@@ -518,7 +592,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             try:
                 executar_com_retry(abrir_formulario, max_tentativas=3, log_container=log_container)
             except Exception as e_nav:
-                log_container.error(f"❌ Falha no formulário: {e_nav}")
+                log_container.error(f"❌ Falha ao carregar formulário: {e_nav}")
                 qtd_ignorados += 1
                 metric_ignorados.metric("Ignorados", qtd_ignorados)
                 
@@ -654,7 +728,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
             if salvo:
                 qtd_lancados += 1
-                metric_lancados.metric("Sucesso", qtd_lancados)
+                metric_lancados.metric("Lançados", qtd_lancados)
                 
                 df_relatorio.at[idx, 'status_lancamento'] = 'Sucesso'
                 df_relatorio.at[idx, 'data_processamento'] = horario_atual
@@ -668,7 +742,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 if not df_relatorio.at[idx, 'observacao']:
                     df_relatorio.at[idx, 'observacao'] = 'Falha ao salvar'
 
-        log_container.success("🎉 Concluído!")
+        log_container.success("🎉 Todos os abastecimentos foram processados!")
 
     except Exception as e:
         log_container.error(f"❌ Erro crítico: {e}")
@@ -678,67 +752,70 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
     return df_relatorio
 
 # ---------------------------------------------------------
-# INTERFACE PRINCIPAL (TABS E LAYOUT LIMPO)
+# INTERFACE PRINCIPAL (SAAS / NETLIFY STYLE)
 # ---------------------------------------------------------
 if verificar_senha():
-    # Cabeçalho Principal
-    st.title("⛽ Central de Abastecimentos ZUQ")
-    
-    # Painel de Configurações Retrátil (Expander Superior)
-    with st.expander("⚙️ Configurações da Conta ZUQ", expanded=False):
-        c1, c2, c3, c4 = st.columns(4)
-        usuario_zuq = c1.text_input("Usuário ZUQ", value="manutencaoverdesmares")
-        senha_zuq = c2.text_input("Senha ZUQ", type="password")
-        url_zuq = c3.text_input("URL ZUQ", value="https://app.zuq.com.br")
-        fornecedor_zuq = c4.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
+    # Header Limpo
+    st.markdown("""
+        <div class="app-header">
+            <div class="app-brand">⚡ ZUQ Auto <span class="app-badge">v2.4 Production</span></div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    st.write("")
+    col_left, col_right = st.columns([1, 1.1], gap="large")
 
-    # Organização em Abas
-    tab1, tab2 = st.tabs(["📁 1. Arquivo e Prévia", "🚀 2. Execução do Lançamento"])
+    with col_left:
+        # Card 1: Credenciais ZUQ
+        st.markdown('<div class="card-title-text">⚙️ Credenciais ZUQ</div>', unsafe_allow_html=True)
+        with st.container():
+            c1, c2 = st.columns(2)
+            usuario_zuq = c1.text_input("Usuário ZUQ", value="manutencaoverdesmares")
+            senha_zuq = c2.text_input("Senha ZUQ", type="password")
+            
+            c3, c4 = st.columns(2)
+            url_zuq = c3.text_input("URL ZUQ", value="https://app.zuq.com.br")
+            fornecedor_zuq = c4.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
 
-    dados_df = None
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    with tab1:
-        st.subheader("Carregar Ficheiro de Abastecimentos")
-        uploaded_file = st.file_uploader("Selecione o arquivo baixado do Liveposto (PDF ou TXT)", type=["pdf", "txt"])
-
+        # Card 2: Upload de Arquivo
+        st.markdown('<div class="card-title-text">📁 Arquivo de Abastecimentos (Liveposto)</div>', unsafe_allow_html=True)
+        uploaded_file = st.file_uploader("Upload de relatório em PDF ou TXT", type=["pdf", "txt"], label_visibility="collapsed")
+        
+        dados_df = None
         if uploaded_file:
             dados_df = extrair_dados_txt_ou_pdf(uploaded_file)
-            st.session_state["dados_carregados"] = dados_df
-            st.success(f"**{len(dados_df)}** abastecimentos identificados no ficheiro.")
+            st.success(f"✅ **{len(dados_df)}** registros de abastecimentos validados no arquivo.")
 
-            st.write("---")
-            st.subheader("Prévia das Linhas Identificadas")
-            st.dataframe(
-                dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], 
-                use_container_width=True,
-                height=350
-            )
+            with st.expander("👁️ Visualizar Prévia da Tabela de Abastecimentos", expanded=False):
+                st.dataframe(
+                    dados_df[['placa', 'data', 'quantidade', 'valor_unitario', 'km']], 
+                    use_container_width=True,
+                    height=250
+                )
 
-    if "dados_carregados" in st.session_state and dados_df is None:
-        dados_df = st.session_state["dados_carregados"]
-
-    with tab2:
-        st.subheader("Painel de Controle do Robô")
-
+    with col_right:
+        # Card 3: Painel de Controle e Métricas
+        st.markdown('<div class="card-title-text">📊 Painel de Controle da Automação</div>', unsafe_allow_html=True)
+        
         m1, m2, m3 = st.columns(3)
-        metric_total = m1.metric("Total Identificado", len(dados_df) if dados_df is not None else 0)
-        metric_lancados = m2.metric("Sucesso", 0)
+        metric_total = m1.metric("Total de Registros", len(dados_df) if dados_df is not None else 0)
+        metric_lancados = m2.metric("Lançados", 0)
         metric_ignorados = m3.metric("Ignorados", 0)
 
-        st.write("")
-        btn_iniciar = st.button("🚀 Iniciar Lançamento no ZUQ", use_container_width=True)
-        st.write("")
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        btn_iniciar = st.button("🚀 Iniciar Lançamento Automático", use_container_width=True)
 
-        progress_bar = st.progress(0, text="Aguardando comando...")
-        log_container = st.container(height=300, border=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        progress_bar = st.progress(0, text="Aguardando disparo...")
+        log_container = st.container(height=280, border=True)
 
         if btn_iniciar:
             if dados_df is None or dados_df.empty:
-                st.error("Por favor, carregue um arquivo PDF ou TXT na primeira aba antes de iniciar.")
+                st.error("Selecione um arquivo PDF ou TXT válido do Liveposto.")
             elif not senha_zuq:
-                st.error("Preencha a senha do ZUQ nas configurações acima.")
+                st.error("Preencha a senha do ZUQ no formulário à esquerda.")
             else:
                 df_resultado = lancar_no_zuq(
                     dados_df, url_zuq, usuario_zuq, senha_zuq, 
@@ -749,15 +826,15 @@ if verificar_senha():
                 if df_resultado is not None:
                     csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
 
-                    st.write("---")
-                    st.subheader("📋 Relatório Final de Processamento")
+                    st.divider()
+                    st.markdown("### 📋 Relatório de Auditoria")
                     st.dataframe(
                         df_resultado[['placa', 'data', 'quantidade', 'status_lancamento', 'observacao']], 
                         use_container_width=True
                     )
 
                     st.download_button(
-                        label="📥 Baixar Relatório (CSV)",
+                        label="📥 Baixar Relatório Completo (CSV)",
                         data=csv_data,
                         file_name=f"relatorio_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv",
