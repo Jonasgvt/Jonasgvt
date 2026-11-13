@@ -1,4 +1,5 @@
 import os
+import io
 import re
 import time
 import traceback
@@ -203,7 +204,7 @@ def verificar_senha():
     return False
 
 # ---------------------------------------------------------
-# PARSER EXTRAÇÃO RIGOROSA DO LIVEPOSTO
+# PARSER EXTRAÇÃO ROBUSTA DO LIVEPOSTO
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
@@ -219,28 +220,32 @@ def limpa_numero(val_str):
     except:
         return 0.0
 
-def extrair_dados_txt_ou_pdf(caminho_ou_stream):
+def extrair_dados_txt_ou_pdf(uploaded_file):
     registos = []
     lines = []
 
-    if hasattr(caminho_ou_stream, 'name') and caminho_ou_stream.name.lower().endswith('.pdf'):
-        try:
-            reader = pypdf.PdfReader(caminho_ou_stream)
+    try:
+        uploaded_file.seek(0)
+        file_bytes = uploaded_file.read()
+        nome_arquivo = uploaded_file.name.lower()
+
+        if nome_arquivo.endswith('.pdf'):
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
             for page in reader.pages:
-                lines.extend(page.extract_text().split('\n'))
-        except Exception:
-            pass
-    elif hasattr(caminho_ou_stream, 'read'):
-        caminho_ou_stream.seek(0)
-        lines = [l.decode('latin1', errors='ignore') for l in caminho_ou_stream.readlines()]
-    elif isinstance(caminho_ou_stream, str) and os.path.exists(caminho_ou_stream):
-        if caminho_ou_stream.lower().endswith('.pdf'):
-            reader = pypdf.PdfReader(caminho_ou_stream)
-            for page in reader.pages:
-                lines.extend(page.extract_text().split('\n'))
+                texto_pag = page.extract_text()
+                if texto_pag:
+                    lines.extend(texto_pag.split('\n'))
         else:
-            with open(caminho_ou_stream, 'r', encoding='latin1', errors='ignore') as f:
-                lines = f.readlines()
+            texto_txt = file_bytes.decode('latin1', errors='ignore')
+            lines = texto_txt.split('\n')
+    except Exception as e:
+        st.error(f"❌ Erro ao ler o arquivo: {e}")
+        return pd.DataFrame()
+
+    if not lines:
+        return pd.DataFrame()
+
+    combustiveis_validos = ("DIESEL", "GASOLINA", "ETANOL", "ALCOOL", "ÁLCOOL")
 
     i = 0
     while i < len(lines):
@@ -263,6 +268,7 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
+            # Captura de KM Atual (ex: 163.179 ou 163179)
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
@@ -280,8 +286,8 @@ def extrair_dados_txt_ou_pdf(caminho_ou_stream):
                 if "Total da Placa:" in sub_line or (j > i + 1 and re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line)):
                     break
 
-                if "DIESEL" in sub_line.upper():
-                    produto_nome = "DIESEL B S10 ADITIVADO"
+                if any(comb in sub_line.upper() for comb in combustiveis_validos):
+                    produto_nome = "DIESEL B S10 ADITIVADO" if "DIESEL" in sub_line.upper() else sub_line.split()[0]
                     
                     numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', sub_line)
                     nums_validos = [n for n in numeros if ',' in n or '.' in n]
@@ -492,18 +498,14 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         if linha_encontrada:
             texto_linha = linha_encontrada.text
-            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando se há divergência em KM, Preço ou Volume...")
+            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando divergências...")
 
-            # Análise de divergência estrita
             km_no_zuq = target_km in re.sub(r'\D', '', texto_linha) if target_km else True
-            
-            # Formatos de preço em reais (ex: R$7,60 ou R$ 7,60)
             preco_formatado = f"{target_preco:.2f}".replace('.', ',') if target_preco > 0 else ""
             preco_no_zuq = (preco_formatado in texto_linha) or any(abs(limpa_numero(td.text) - target_preco) < 0.05 for td in linha_encontrada.find_elements(By.TAG_NAME, "td") if limpa_numero(td.text) > 0) if target_preco > 0 else True
 
-            # Se houver qualquer divergência no Preço, KM ou Volume, abre para EDITAR
             if (not km_no_zuq) or (not preco_no_zuq) or "0,00" in texto_linha or "0.00" in texto_linha:
-                log_container.warning(f"✏️ Divergência de valores/KM detectada na placa {placa}. Editando no ZUQ...")
+                log_container.warning(f"✏️ Divergência detectada na placa {placa}. Editando no ZUQ...")
 
                 try:
                     link_registro = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
@@ -521,7 +523,6 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                     log_container.error(f"❌ Não foi possível abrir edição: {e_ed}")
                     return True, "Erro ao abrir edição", placa
 
-                # 1. Atualiza Preço Unitário
                 if target_preco > 0:
                     try:
                         campo_preco = driver.find_element(By.NAME, "price")
@@ -529,7 +530,6 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                         log_container.info(f"✏️ Preço Unitário corrigido para R$ {preco}")
                     except Exception: pass
 
-                # 2. Atualiza Litros
                 if target_litros > 0:
                     try:
                         campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
@@ -537,7 +537,6 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                         log_container.info(f"✏️ Volume corrigido para {litros} L")
                     except Exception: pass
 
-                # 3. Atualiza KM
                 if km and km != "0":
                     try:
                         campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
@@ -858,30 +857,41 @@ if verificar_senha():
         st.markdown("### 📁 1. Ficheiro Liveposto")
         uploaded_file = st.file_uploader("Upload de relatório em PDF ou TXT", type=["pdf", "txt"], label_visibility="collapsed")
 
-        if uploaded_file and "dados_df" not in st.session_state:
-            st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
+        # Atualiza os dados sempre que um novo ficheiro for carregado ou substituído
+        if uploaded_file is not None:
+            file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+            if st.session_state.get("ultimo_arquivo_id") != file_id:
+                st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
+                st.session_state["ultimo_arquivo_id"] = file_id
+        else:
+            st.session_state["dados_df"] = None
+            st.session_state["ultimo_arquivo_id"] = None
 
-        if "dados_df" in st.session_state and st.session_state["dados_df"] is not None:
-            st.info("💡 **Conciliação Ativa**: Registros existentes no ZUQ com KM, Preço Unitário ou Litros divergentes serão **editados e corrigidos automaticamente** pelo robô.")
+        if st.session_state.get("dados_df") is not None:
+            if st.session_state["dados_df"].empty:
+                st.warning("⚠️ Nenhum registo encontrado neste PDF. Verifique se o PDF contém texto selecionável (não é imagem digitalizada) e se segue o layout do relatório Liveposto.")
+            else:
+                st.info("💡 **Conciliação Ativa**: Registos existentes no ZUQ com KM, Preço Unitário ou Litros divergentes serão **editados e corrigidos automaticamente** pelo robô.")
 
-            # Tabela Interativa
-            df_editado = st.data_editor(
-                st.session_state["dados_df"],
-                column_order=['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria'],
-                column_config={
-                    "placa": st.column_config.TextColumn("Placa", required=True),
-                    "data": st.column_config.TextColumn("Data", required=True),
-                    "quantidade": st.column_config.TextColumn("Litros", required=True),
-                    "valor_unitario": st.column_config.TextColumn("Preço / L", required=True),
-                    "km": st.column_config.TextColumn("KM (Edição livre)", required=False),
-                    "alertas_auditoria": st.column_config.TextColumn("Status", disabled=True),
-                },
-                use_container_width=True,
-                num_rows="dynamic",
-                height=350
-            )
+                df_editado = st.data_editor(
+                    st.session_state["dados_df"],
+                    column_order=['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria'],
+                    column_config={
+                        "placa": st.column_config.TextColumn("Placa", required=True),
+                        "data": st.column_config.TextColumn("Data", required=True),
+                        "quantidade": st.column_config.TextColumn("Litros", required=True),
+                        "valor_unitario": st.column_config.TextColumn("Preço / L", required=True),
+                        "km": st.column_config.TextColumn("KM (Edição livre)", required=False),
+                        "alertas_auditoria": st.column_config.TextColumn("Status", disabled=True),
+                    },
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    height=350
+                )
 
-            st.session_state["dados_final"] = auditar_e_validar_dados(df_editado)
+                st.session_state["dados_final"] = auditar_e_validar_dados(df_editado)
+        else:
+            st.session_state["dados_final"] = None
 
     with col_control:
         st.markdown("### 📊 2. Lançamento e Conciliação ZUQ")
@@ -889,7 +899,7 @@ if verificar_senha():
         df_para_processar = st.session_state.get("dados_final", None)
 
         kpi1, kpi2, kpi3 = st.columns(3)
-        metric_total = kpi1.metric("Total a Analisar", len(df_para_processar) if df_para_processar is not None else 0)
+        metric_total = kpi1.metric("Total a Analisar", len(df_para_processar) if df_para_processar is not None and not df_para_processar.empty else 0)
         metric_lancados = kpi2.metric("Conciliados/Lançados", 0)
         metric_ignorados = kpi3.metric("Erros", 0)
 
@@ -903,7 +913,7 @@ if verificar_senha():
 
         if btn_iniciar:
             if df_para_processar is None or df_para_processar.empty:
-                st.error("Faça o upload do ficheiro PDF/TXT antes de iniciar.")
+                st.error("Faça o upload de um ficheiro PDF/TXT válido antes de iniciar.")
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ nas configurações acima.")
             else:
