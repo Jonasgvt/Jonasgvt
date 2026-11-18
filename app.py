@@ -2,8 +2,9 @@ import os
 import io
 import re
 import time
-import traceback
+import hmac
 from datetime import datetime
+
 import pandas as pd
 import pypdf
 import streamlit as st
@@ -18,8 +19,35 @@ from selenium.common.exceptions import (
     WebDriverException,
     TimeoutException,
     NoSuchElementException,
-    StaleElementReferenceException
+    StaleElementReferenceException,
 )
+
+# ---------------------------------------------------------
+# CONSTANTES
+# ---------------------------------------------------------
+PRECO_MIN, PRECO_MAX = 3.0, 15.0      # faixa plausível de R$/L
+LITROS_MAX = 600.0                    # volume atípico por abastecimento
+TOL_TOTAL = 0.02                      # tolerância litros x preço vs total (2%)
+MAX_TENTATIVAS_LOGIN = 5
+BLOQUEIO_SEGUNDOS = 60
+COLUNAS_BASE = ['data', 'hora', 'cupom', 'placa', 'produto',
+                'quantidade', 'valor_unitario', 'valor_total', 'km']
+
+XP_LITROS = "//label[contains(text(),'Litros')]/following::input[1]"
+XP_KM = "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]"
+XP_VEICULO = "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]"
+XP_FORNECEDOR = "//label[contains(text(),'Fornecedor')]/following::div[contains(@class,'selectize-input')][1]"
+XP_DOC = "//label[contains(text(),'Documento fiscal')]/following::input[1]"
+JS_SET = ("arguments[0].value = arguments[1];"
+          "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+          "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));")
+
+# Compatibilidade entre versões do Streamlit (use_container_width -> width="stretch")
+try:
+    _v = tuple(int(x) for x in st.__version__.split('.')[:2])
+except Exception:
+    _v = (0, 0)
+STRETCH = {"width": "stretch"} if _v >= (1, 50) else {"use_container_width": True}
 
 # ---------------------------------------------------------
 # CONFIGURAÇÃO DE PÁGINA E ESTILO APPLE GLASS
@@ -49,7 +77,7 @@ st.markdown("""
     }
 
     #MainMenu, footer, header { visibility: hidden; }
-    
+
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 2.5rem !important;
@@ -69,7 +97,7 @@ st.markdown("""
         margin-bottom: 1.8rem;
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
     }
-    
+
     .glass-logo {
         display: flex;
         align-items: center;
@@ -110,7 +138,7 @@ st.markdown("""
 
     div[data-testid="stMetricValue"] {
         color: #FFFFFF !important;
-        font-size: 1.7rem !important;
+        font-size: 1.5rem !important;
         font-weight: 800 !important;
         letter-spacing: -0.5px;
     }
@@ -164,21 +192,33 @@ st.markdown("""
         border-radius: 20px !important;
         padding: 15px !important;
     }
-    
+
     .stMarkdown h3, .stMarkdown label {
         color: rgba(255, 255, 255, 0.85) !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# AUTENTICAÇÃO
-# ---------------------------------------------------------
-def verificar_senha():
-    SENHA_CORRETA = st.secrets.get("APP_PASSWORD", "zuq123")
 
-    if "autenticado" not in st.session_state:
-        st.session_state["autenticado"] = False
+# ---------------------------------------------------------
+# SEGREDOS E AUTENTICAÇÃO
+# ---------------------------------------------------------
+def _segredo(chave, padrao=""):
+    """Lê de st.secrets, depois de variável de ambiente, depois padrão."""
+    try:
+        if chave in st.secrets:
+            return str(st.secrets[chave])
+    except Exception:
+        pass
+    return os.environ.get(chave, padrao)
+
+
+def verificar_senha():
+    senha_correta = _segredo("APP_PASSWORD")
+
+    st.session_state.setdefault("autenticado", False)
+    st.session_state.setdefault("tentativas", 0)
+    st.session_state.setdefault("bloqueado_ate", 0.0)
 
     if st.session_state["autenticado"]:
         return True
@@ -187,39 +227,85 @@ def verificar_senha():
     st.markdown('<div style="font-size: 2.2rem; font-weight: 800; color: #FFFFFF; letter-spacing: -0.6px;">⚡ ZUQ Auto</div>', unsafe_allow_html=True)
     st.markdown('<div style="font-size: 0.95rem; color: rgba(255,255,255,0.65); margin-bottom: 2rem;">Acesso restrito. Digite a senha corporativa para continuar.</div>', unsafe_allow_html=True)
 
+    if not senha_correta:
+        st.error("🔒 APP_PASSWORD não configurada em st.secrets ou variável de ambiente. Acesso bloqueado por segurança.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return False
+
     col1, col2, col3 = st.columns([1.2, 1, 1.2])
     with col2:
-        with st.form("form_login"):
-            senha_digitada = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha")
-            btn_login = st.form_submit_button("Entrar", use_container_width=True)
+        restante = st.session_state["bloqueado_ate"] - time.time()
+        if restante > 0:
+            st.error(f"⏳ Muitas tentativas. Aguarde {int(restante)}s.")
+        else:
+            with st.form("form_login"):
+                senha_digitada = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha")
+                btn_login = st.form_submit_button("Entrar", **STRETCH)
 
-            if btn_login:
-                if senha_digitada == SENHA_CORRETA:
-                    st.session_state["autenticado"] = True
-                    st.rerun()
-                else:
-                    st.error("❌ Credencial inválida.")
+                if btn_login:
+                    if hmac.compare_digest(senha_digitada.encode(), senha_correta.encode()):
+                        st.session_state["autenticado"] = True
+                        st.session_state["tentativas"] = 0
+                        st.rerun()
+                    else:
+                        st.session_state["tentativas"] += 1
+                        if st.session_state["tentativas"] >= MAX_TENTATIVAS_LOGIN:
+                            st.session_state["bloqueado_ate"] = time.time() + BLOQUEIO_SEGUNDOS
+                            st.session_state["tentativas"] = 0
+                        st.error("❌ Credencial inválida.")
     st.markdown('</div>', unsafe_allow_html=True)
-                    
     return False
 
+
 # ---------------------------------------------------------
-# PARSER EXTRAÇÃO ROBUSTA DO LIVEPOSTO
+# UTILITÁRIOS
 # ---------------------------------------------------------
 def digitar_devagar(elemento, texto, atraso=0.05):
     for caractere in str(texto):
         elemento.send_keys(caractere)
         time.sleep(atraso)
 
+
 def limpa_numero(val_str):
-    if not val_str:
+    """Converte '1.234,56', '7,600', '7.600' ou 'R$ 7,60' em float."""
+    if val_str is None:
         return 0.0
-    s = re.sub(r'[^\d,\.]', '', str(val_str)).replace(',', '.')
+    s = re.sub(r'[^\d,\.]', '', str(val_str))
+    if not s:
+        return 0.0
+    if ',' in s and '.' in s:
+        # O último separador é o decimal; o outro é milhar
+        if s.rfind(',') > s.rfind('.'):
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            s = s.replace(',', '')
+    else:
+        s = s.replace(',', '.')
     try:
         return float(s)
-    except:
+    except ValueError:
         return 0.0
 
+
+def set_js(driver, elemento, valor):
+    driver.execute_script(JS_SET, elemento, str(valor))
+
+
+def data_no_texto(texto, data_str):
+    """Casa a data sem confundir 5/11/2026 com 15/11/2026."""
+    partes = str(data_str).split('/')
+    variantes = {str(data_str)}
+    if len(partes) == 3:
+        try:
+            variantes.add(f"{int(partes[0])}/{int(partes[1])}/{partes[2]}")
+        except ValueError:
+            pass
+    return any(re.search(r'(?<!\d)' + re.escape(v) + r'(?!\d)', texto) for v in variantes)
+
+
+# ---------------------------------------------------------
+# PARSER LIVEPOSTO
+# ---------------------------------------------------------
 def extrair_dados_txt_ou_pdf(uploaded_file):
     registos = []
     lines = []
@@ -236,8 +322,7 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                 if texto_pag:
                     lines.extend(texto_pag.split('\n'))
         else:
-            texto_txt = file_bytes.decode('latin1', errors='ignore')
-            lines = texto_txt.split('\n')
+            lines = file_bytes.decode('latin1', errors='ignore').split('\n')
     except Exception as e:
         st.error(f"❌ Erro ao ler o arquivo: {e}")
         return pd.DataFrame()
@@ -246,12 +331,12 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
         return pd.DataFrame()
 
     combustiveis_validos = ("DIESEL", "GASOLINA", "ETANOL", "ALCOOL", "ÁLCOOL")
+    re_placa = r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})'
 
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-
-        m_placa = re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', line)
+        m_placa = re.search(re_placa, line)
         m_data = re.search(r'(\d{2}/\d{2}/\d{2,4})', line)
 
         if m_placa and m_data:
@@ -268,34 +353,29 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            # Captura de KM Atual (ex: 163.179 ou 163179)
             km = ""
             m_km_ponto = re.search(r'(\d{2,3}\.\d{3})', line)
             if m_km_ponto:
                 km = m_km_ponto.group(1).replace('.', '')
             else:
-                nums_linha = re.findall(r'\b(\d{5,6})\b', line)
-                nums_filtrados = [n for n in nums_linha if n != cupom]
+                nums_filtrados = [n for n in re.findall(r'\b(\d{5,6})\b', line) if n != cupom]
                 if nums_filtrados:
                     km = nums_filtrados[0]
 
             j = i + 1
             while j < len(lines):
                 sub_line = lines[j].strip()
-                
-                if "Total da Placa:" in sub_line or (j > i + 1 and re.search(r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})', sub_line)):
+
+                if "Total da Placa:" in sub_line or (j > i + 1 and re.search(re_placa, sub_line)):
                     break
 
                 if any(comb in sub_line.upper() for comb in combustiveis_validos):
                     produto_nome = "DIESEL B S10 ADITIVADO" if "DIESEL" in sub_line.upper() else sub_line.split()[0]
-                    
+
                     numeros = re.findall(r'(\d+(?:[\.,]\d+)?)', sub_line)
                     nums_validos = [n for n in numeros if ',' in n or '.' in n]
 
-                    vlr_unit = "7,600"
-                    quantidade = "0,00"
-                    valor_total = "0,00"
-
+                    vlr_unit, quantidade, valor_total = "7,600", "0,00", "0,00"
                     if len(nums_validos) >= 2:
                         vlr_unit = nums_validos[0]
                         quantidade = nums_validos[1]
@@ -305,55 +385,114 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                         vlr_unit = nums_validos[0]
 
                     registos.append({
-                        'data': dt_str,
-                        'hora': hora,
-                        'cupom': cupom,
-                        'placa': placa,
-                        'produto': produto_nome,
-                        'quantidade': quantidade,
-                        'valor_unitario': vlr_unit,
-                        'valor_total': valor_total,
-                        'km': km
+                        'data': dt_str, 'hora': hora, 'cupom': cupom, 'placa': placa,
+                        'produto': produto_nome, 'quantidade': quantidade,
+                        'valor_unitario': vlr_unit, 'valor_total': valor_total, 'km': km,
                     })
                     break
                 j += 1
-
         i += 1
 
-    df = pd.DataFrame(registos)
-    return auditar_e_validar_dados(df)
+    return auditar_e_validar_dados(pd.DataFrame(registos))
 
+
+# ---------------------------------------------------------
+# AUDITORIA
+# ---------------------------------------------------------
 def auditar_e_validar_dados(df):
-    if df.empty:
+    if df is None or df.empty:
         return df
 
-    df['alertas_auditoria'] = ''
+    df = df.copy()
+    for col in COLUNAS_BASE:
+        if col not in df.columns:
+            df[col] = ''
+    df = df.fillna('')
 
+    datas = pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce')
+
+    chave = df[['placa', 'data', 'hora', 'cupom', 'quantidade']].astype(str).agg('|'.join, axis=1)
+    duplicado = chave.duplicated(keep='first')
+
+    # KM menor que o abastecimento anterior da mesma placa
+    regressao = pd.Series(False, index=df.index)
+    tmp = pd.DataFrame({
+        'placa': df['placa'].astype(str),
+        'dt': datas,
+        'hora': df['hora'].astype(str),
+        'km': df['km'].map(limpa_numero),
+    }, index=df.index)
+    tmp = tmp[(tmp['km'] > 0) & tmp['dt'].notna()].sort_values(['placa', 'dt', 'hora'])
+    if not tmp.empty:
+        anterior = tmp.groupby('placa')['km'].shift()
+        mask = (anterior.notna() & (tmp['km'] < anterior)).values
+        regressao.loc[tmp.index[mask]] = True
+
+    alertas_col = []
     for idx, row in df.iterrows():
         alertas = []
-
         km_val = limpa_numero(row['km'])
+        preco = limpa_numero(row['valor_unitario'])
+        litros = limpa_numero(row['quantidade'])
+        total = limpa_numero(row['valor_total'])
+        placa = str(row['placa']).strip().upper().replace('-', '')
+
         if km_val == 0:
             alertas.append("⚠️ KM Ausente")
-
-        preco_val = limpa_numero(row['valor_unitario'])
-        if preco_val == 0:
+        if preco == 0:
             alertas.append("❌ Preço zerado")
-
-        litros_val = limpa_numero(row['quantidade'])
-        if litros_val == 0:
+        elif not (PRECO_MIN <= preco <= PRECO_MAX):
+            alertas.append("⚠️ Preço fora da faixa")
+        if litros == 0:
             alertas.append("❌ Litros zerados")
-
-        if not re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', str(row['placa']).strip()):
+        elif litros > LITROS_MAX:
+            alertas.append("⚠️ Volume atípico")
+        if preco > 0 and litros > 0 and total > 0:
+            esperado = preco * litros
+            if abs(esperado - total) > max(0.5, TOL_TOTAL * total):
+                alertas.append("⚠️ Total inconsistente")
+        if not re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', placa):
             alertas.append("⚠️ Placa suspeita")
+        if pd.isna(datas.loc[idx]):
+            alertas.append("❌ Data inválida")
+        if duplicado.loc[idx]:
+            alertas.append("🔁 Duplicado")
+        if regressao.loc[idx]:
+            alertas.append("⚠️ KM menor que o anterior")
 
-        if alertas:
-            df.at[idx, 'alertas_auditoria'] = " | ".join(alertas)
-        else:
-            df.at[idx, 'alertas_auditoria'] = "✅ Prontos para conciliar"
+        alertas_col.append(" | ".join(alertas) if alertas else "✅ Prontos para conciliar")
 
+    df['alertas_auditoria'] = alertas_col
     return df
 
+
+def calcular_metricas_pre(df):
+    """Métricas descritivas do arquivo carregado."""
+    if df is None or df.empty:
+        return dict(registros=0, litros=0.0, valor=0.0, com_alerta=0, criticos=0, duplicados=0, preco_medio=0.0)
+    litros = df['quantidade'].map(limpa_numero)
+    preco = df['valor_unitario'].map(limpa_numero)
+    alertas = df['alertas_auditoria'].astype(str)
+    valor_total = float((litros * preco).sum())
+    litros_total = float(litros.sum())
+    return dict(
+        registros=len(df),
+        litros=litros_total,
+        valor=valor_total,
+        com_alerta=int((~alertas.str.startswith("✅")).sum()),
+        criticos=int(alertas.str.contains("❌").sum()),
+        duplicados=int(alertas.str.contains("🔁").sum()),
+        preco_medio=(valor_total / litros_total) if litros_total else 0.0,
+    )
+
+
+def fmt_brl(v):
+    return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+# ---------------------------------------------------------
+# SELENIUM - SUPORTE
+# ---------------------------------------------------------
 def fechar_alerta_se_existir(driver, log_container):
     try:
         alert = driver.switch_to.alert
@@ -362,8 +501,9 @@ def fechar_alerta_se_existir(driver, log_container):
         log_container.warning(f"⚠️ Alerta retornado: {texto}")
         time.sleep(0.8)
         return True
-    except:
+    except Exception:
         return False
+
 
 def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
     driver.set_page_load_timeout(timeout)
@@ -375,214 +515,26 @@ def navegar_com_timeout_seguro(driver, url, timeout=15, log_container=None):
         driver.execute_script("window.stop();")
         time.sleep(0.5)
 
+
 def executar_com_retry(func, max_tentativas=3, intervalo_base=2.0, log_container=None):
-    excecoes_capturadas = (
-        WebDriverException, 
-        TimeoutException, 
-        NoSuchElementException, 
-        StaleElementReferenceException
-    )
-    
+    excecoes = (WebDriverException, TimeoutException, NoSuchElementException, StaleElementReferenceException)
     for tentativa in range(1, max_tentativas + 1):
         try:
             return func()
-        except excecoes_capturadas as e:
-            tempo_espera = intervalo_base * (2 ** (tentativa - 1))
+        except excecoes as e:
             if log_container:
                 log_container.warning(f"⚠️ Tentativa {tentativa}/{max_tentativas}...")
-            
             if tentativa == max_tentativas:
                 raise e
-            time.sleep(tempo_espera)
+            time.sleep(intervalo_base * (2 ** (tentativa - 1)))
 
-# ---------------------------------------------------------
-# CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ (PREÇO + LITROS + KM)
-# ---------------------------------------------------------
-def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros, preco, cupom, hora, FORNECEDOR, ultima_placa_filtrada, log_container):
-    try:
-        precisa_filtrar = (placa != ultima_placa_filtrada) or ("/fuel" not in driver.current_url)
 
-        if precisa_filtrar:
-            navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12, log_container=log_container)
-            time.sleep(1.5)
-
-            try:
-                btn_filtro = wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
-                btn_filtro.click()
-                time.sleep(0.8)
-
-                select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
-                if select_filtro:
-                    Select(select_filtro[0]).select_by_visible_text("Placa")
-                    time.sleep(0.3)
-
-                input_modal = driver.find_element(By.XPATH, "//div[contains(@class,'selectize-input')]//input")
-                input_modal.click()
-                time.sleep(0.3)
-
-                itens_selecionados = driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//div[contains(@class,'item')]")
-                for item in itens_selecionados:
-                    try:
-                        item.find_element(By.XPATH, ".//a[contains(@class,'remove')]").click()
-                        time.sleep(0.2)
-                    except:
-                        pass
-
-                input_modal.send_keys(Keys.CONTROL + "a")
-                input_modal.send_keys(Keys.BACKSPACE)
-                time.sleep(0.3)
-
-                digitar_devagar(input_modal, placa, atraso=0.05)
-                time.sleep(1.2)
-
-                opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
-                
-                if not opcoes:
-                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no ZUQ!")
-                    btn_cancelar = driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]")
-                    btn_cancelar.click()
-                    time.sleep(0.8)
-                    fechar_alerta_se_existir(driver, log_container)
-                    return False, "Placa não encontrada", placa
-
-                opcoes[0].click()
-                time.sleep(0.4)
-
-                try:
-                    driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
-                except:
-                    input_modal.send_keys(Keys.ESCAPE)
-                
-                time.sleep(0.5)
-
-                btn_confirmar = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]")))
-                btn_confirmar.click()
-                time.sleep(1.5)
-
-                fechar_alerta_se_existir(driver, log_container)
-
-            except Exception:
-                try:
-                    driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
-                except:
-                    pass
-                fechar_alerta_se_existir(driver, log_container)
-                return False, "Erro ao filtrar", placa
-
-        target_litros = limpa_numero(litros)
-        target_preco = limpa_numero(preco)
-        target_km = re.sub(r'\D', '', str(km)) if km else ""
-        
-        partes_data = str(data).split('/')
-        data_curta = f"{int(partes_data[0])}/{int(partes_data[1])}/{partes_data[2]}" if len(partes_data) == 3 else data
-
-        linhas = driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]")
-        linha_encontrada = None
-
-        for linha in linhas:
-            texto_linha = linha.text
-            if not texto_linha:
-                continue
-
-            if (data in texto_linha) or (data_curta in texto_linha):
-                tds = linha.find_elements(By.TAG_NAME, "td")
-                numeros_celulas = [limpa_numero(td.text) for td in tds if limpa_numero(td.text) > 0]
-
-                litros_coincide = any(abs(n - target_litros) < 0.1 for n in numeros_celulas) if target_litros > 0 else False
-                preco_coincide = any(abs(n - target_preco) < 0.05 for n in numeros_celulas) if target_preco > 0 else False
-                km_coincide = target_km != "" and target_km in re.sub(r'\D', '', texto_linha)
-
-                if litros_coincide or preco_coincide or km_coincide:
-                    linha_encontrada = linha
-                    break
-
-        if linha_encontrada:
-            texto_linha = linha_encontrada.text
-            log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando divergências...")
-
-            km_no_zuq = target_km in re.sub(r'\D', '', texto_linha) if target_km else True
-            preco_formatado = f"{target_preco:.2f}".replace('.', ',') if target_preco > 0 else ""
-            preco_no_zuq = (preco_formatado in texto_linha) or any(abs(limpa_numero(td.text) - target_preco) < 0.05 for td in linha_encontrada.find_elements(By.TAG_NAME, "td") if limpa_numero(td.text) > 0) if target_preco > 0 else True
-
-            if (not km_no_zuq) or (not preco_no_zuq) or "0,00" in texto_linha or "0.00" in texto_linha:
-                log_container.warning(f"✏️ Divergência detectada na placa {placa}. Editando no ZUQ...")
-
-                try:
-                    link_registro = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
-                    navegar_com_timeout_seguro(driver, link_registro.get_attribute("href"), timeout=12, log_container=log_container)
-                except:
-                    linha_encontrada.click()
-
-                time.sleep(1.8)
-
-                try:
-                    btn_editar = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]")))
-                    btn_editar.click()
-                    time.sleep(1.5)
-                except Exception as e_ed:
-                    log_container.error(f"❌ Não foi possível abrir edição: {e_ed}")
-                    return True, "Erro ao abrir edição", placa
-
-                if target_preco > 0:
-                    try:
-                        campo_preco = driver.find_element(By.NAME, "price")
-                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, preco)
-                        log_container.info(f"✏️ Preço Unitário corrigido para R$ {preco}")
-                    except Exception: pass
-
-                if target_litros > 0:
-                    try:
-                        campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
-                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, litros)
-                        log_container.info(f"✏️ Volume corrigido para {litros} L")
-                    except Exception: pass
-
-                if km and km != "0":
-                    try:
-                        campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
-                        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, km)
-                        log_container.info(f"✏️ KM corrigido para {km}")
-                    except Exception: pass
-
-                for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
-                    try:
-                        btn_salvar = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                        btn_salvar.click()
-                        time.sleep(1.5)
-                        break
-                    except Exception: 
-                        continue
-
-                log_container.success(f"✅ Preço/Litros/KM atualizados no ZUQ para {placa}!")
-                return True, "Preço e Dados Corrigidos no ZUQ", placa
-            else:
-                log_container.info(f"✅ Registro no ZUQ já está 100% correto.")
-                return True, "Já Cadastrado (Sem divergência)", placa
-
-        else:
-            log_container.info(f"➕ Criando novo abastecimento no ZUQ para {placa}...")
-            return False, "Criar Novo", placa
-
-    except Exception as e:
-        fechar_alerta_se_existir(driver, log_container)
-        return False, f"Erro na análise: {str(e)}", placa
-
-# ---------------------------------------------------------
-# AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
-# ---------------------------------------------------------
-def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar, metric_lancados, metric_ignorados):
-    df_relatorio = df.copy()
-    df_relatorio['status_lancamento'] = 'Pendente'
-    df_relatorio['data_processamento'] = ''
-    df_relatorio['observacao'] = ''
-
+def criar_driver():
     options = webdriver.ChromeOptions()
     options.page_load_strategy = 'eager'
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
+    for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+                "--disable-gpu", "--window-size=1920,1080"):
+        options.add_argument(arg)
 
     if os.path.exists("/usr/bin/chromium"):
         options.binary_location = "/usr/bin/chromium"
@@ -597,15 +549,226 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         driver = webdriver.Chrome(service=service, options=options)
     except Exception:
         driver = webdriver.Chrome(options=options)
-
     driver.set_page_load_timeout(15)
-    wait = WebDriverWait(driver, 15)
+    return driver
 
-    df = df.sort_values(by="placa").reset_index(drop=True)
 
-    qtd_lancados = 0
-    qtd_ignorados = 0
+def salvar_formulario(driver, wait, log_container):
+    """Clica em Salvar; se houver conflito de odômetro, limpa o KM e salva de novo."""
+    for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
+        try:
+            btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            btn.click()
+            time.sleep(1.2)
+
+            erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
+            if erros_km and erros_km[0].is_displayed():
+                log_container.warning("⚠️ Conflito de Odômetro. Salvando sem KM...")
+                campo_km = driver.find_element(By.XPATH, XP_KM)
+                driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
+                time.sleep(0.5)
+                btn.click()
+                time.sleep(1.2)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+# ---------------------------------------------------------
+# CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ
+# Retorna (acao, observacao, ultima_placa_filtrada)
+# acao: OK | ATUALIZADO | CRIAR | ERRO | NAO_ENCONTRADA
+# ---------------------------------------------------------
+def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros, preco,
+                                ultima_placa_filtrada, log_container):
+    try:
+        url_atual = driver.current_url.rstrip('/')
+        na_lista = url_atual.endswith("#/fuel")
+        precisa_filtrar = (placa != ultima_placa_filtrada) or (not na_lista)
+
+        if precisa_filtrar:
+            navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12, log_container=log_container)
+            time.sleep(1.5)
+
+            try:
+                wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
+                time.sleep(0.8)
+
+                select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
+                if select_filtro:
+                    Select(select_filtro[0]).select_by_visible_text("Placa")
+                    time.sleep(0.3)
+
+                input_modal = driver.find_element(By.XPATH, "//div[contains(@class,'selectize-input')]//input")
+                input_modal.click()
+                time.sleep(0.3)
+
+                for item in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//div[contains(@class,'item')]"):
+                    try:
+                        item.find_element(By.XPATH, ".//a[contains(@class,'remove')]").click()
+                        time.sleep(0.2)
+                    except Exception:
+                        pass
+
+                input_modal.send_keys(Keys.CONTROL + "a")
+                input_modal.send_keys(Keys.BACKSPACE)
+                time.sleep(0.3)
+                digitar_devagar(input_modal, placa, atraso=0.05)
+                time.sleep(1.2)
+
+                opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
+                if not opcoes:
+                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no ZUQ!")
+                    driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
+                    time.sleep(0.8)
+                    fechar_alerta_se_existir(driver, log_container)
+                    return "NAO_ENCONTRADA", "Placa não encontrada no ZUQ", ""
+
+                opcoes[0].click()
+                time.sleep(0.4)
+                try:
+                    driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
+                except Exception:
+                    input_modal.send_keys(Keys.ESCAPE)
+                time.sleep(0.5)
+
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))).click()
+                time.sleep(1.5)
+                fechar_alerta_se_existir(driver, log_container)
+
+            except Exception:
+                try:
+                    driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
+                except Exception:
+                    pass
+                fechar_alerta_se_existir(driver, log_container)
+                # NÃO cria registro quando o filtro falha: evita duplicar abastecimento
+                return "ERRO", "Erro ao filtrar placa", ""
+
+        target_litros = limpa_numero(litros)
+        target_preco = limpa_numero(preco)
+        target_km = re.sub(r'\D', '', str(km)) if km else ""
+
+        # --- Localiza candidatos pela data e pontua por litros/preço/KM ---
+        candidatos = []
+        for linha in driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]"):
+            texto = linha.text
+            if not texto or not data_no_texto(texto, data):
+                continue
+            tds = linha.find_elements(By.TAG_NAME, "td")
+            nums = [limpa_numero(td.text) for td in tds]
+            nums = [n for n in nums if n > 0]
+            l_ok = target_litros > 0 and any(abs(n - target_litros) < 0.1 for n in nums)
+            p_ok = target_preco > 0 and any(abs(n - target_preco) < 0.05 for n in nums)
+            k_ok = bool(target_km) and any(re.sub(r'\D', '', td.text) == target_km for td in tds)
+            candidatos.append((int(l_ok) + int(p_ok) + int(k_ok), linha, l_ok, p_ok, k_ok))
+
+        candidatos.sort(key=lambda c: c[0], reverse=True)
+
+        if not candidatos or candidatos[0][0] == 0:
+            log_container.info(f"➕ Nenhum registro correspondente. Criando novo para {placa}...")
+            return "CRIAR", "Criar Novo", placa
+
+        melhor_score, linha_encontrada, l_ok, p_ok, k_ok = candidatos[0]
+        if melhor_score == 1 and len(candidatos) > 1:
+            log_container.warning(f"❓ Correspondência ambígua para {placa} ({data}). Revisar manualmente.")
+            return "ERRO", "Ambíguo: várias linhas na mesma data, revisar manualmente", placa
+
+        log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando divergências...")
+
+        tds_texto = [td.text.strip() for td in linha_encontrada.find_elements(By.TAG_NAME, "td")]
+        tem_zerado = any(t in ("0,00", "0.00") for t in tds_texto)
+        precisa_editar = (target_km and not k_ok) or (target_preco > 0 and not p_ok) \
+            or (target_litros > 0 and not l_ok) or tem_zerado
+
+        if not precisa_editar:
+            log_container.info("✅ Registro no ZUQ já está 100% correto.")
+            return "OK", "Já cadastrado (sem divergência)", placa
+
+        log_container.warning(f"✏️ Divergência detectada na placa {placa}. Editando no ZUQ...")
+        try:
+            link = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
+            navegar_com_timeout_seguro(driver, link.get_attribute("href"), timeout=12, log_container=log_container)
+        except Exception:
+            linha_encontrada.click()
+        time.sleep(1.8)
+
+        try:
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]"))).click()
+            time.sleep(1.5)
+        except Exception as e_ed:
+            log_container.error(f"❌ Não foi possível abrir edição: {e_ed}")
+            return "ERRO", "Erro ao abrir edição", ""
+
+        if target_preco > 0:
+            try:
+                set_js(driver, driver.find_element(By.NAME, "price"), preco)
+                log_container.info(f"✏️ Preço unitário corrigido para R$ {preco}")
+            except Exception:
+                pass
+        if target_litros > 0:
+            try:
+                set_js(driver, driver.find_element(By.XPATH, XP_LITROS), litros)
+                log_container.info(f"✏️ Volume corrigido para {litros} L")
+            except Exception:
+                pass
+        if km and km != "0":
+            try:
+                set_js(driver, driver.find_element(By.XPATH, XP_KM), km)
+                log_container.info(f"✏️ KM corrigido para {km}")
+            except Exception:
+                pass
+
+        if salvar_formulario(driver, wait, log_container):
+            log_container.success(f"✅ Preço/Litros/KM atualizados no ZUQ para {placa}!")
+            # Saímos da lista: força novo filtro no próximo registro
+            return "ATUALIZADO", "Preço e dados corrigidos no ZUQ", ""
+        return "ERRO", "Falha ao salvar edição", ""
+
+    except Exception as e:
+        fechar_alerta_se_existir(driver, log_container)
+        return "ERRO", f"Erro na análise: {e}", ""
+
+
+# ---------------------------------------------------------
+# AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
+# ---------------------------------------------------------
+def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
+                  ui, pular_criticos=True):
+    # Ordena ANTES de copiar para manter os índices alinhados com o relatório
+    df = df.sort_values(by="placa", kind="stable").reset_index(drop=True)
+    df_relatorio = df.copy()
+    df_relatorio['status_lancamento'] = 'Pendente'
+    df_relatorio['data_processamento'] = ''
+    df_relatorio['observacao'] = ''
+    df_relatorio['segundos'] = 0.0
+
+    contadores = dict(ok=0, atualizados=0, criados=0, erros=0)
     total_registros = len(df)
+    t0 = time.time()
+
+    def atualizar_kpis():
+        proc = contadores['ok'] + contadores['atualizados'] + contadores['criados']
+        feitos = proc + contadores['erros']
+        ui['ok'].metric("Já corretos", contadores['ok'])
+        ui['atualizados'].metric("Atualizados", contadores['atualizados'])
+        ui['criados'].metric("Criados", contadores['criados'])
+        ui['erros'].metric("Erros / Ignorados", contadores['erros'])
+        ui['taxa'].metric("Taxa de sucesso", f"{proc / feitos * 100:.0f}%" if feitos else "—")
+        ui['tempo'].metric("Tempo decorrido", f"{time.time() - t0:.0f}s")
+
+    def registrar(idx, status, obs, chave, t_ini):
+        contadores[chave] += 1
+        df_relatorio.at[idx, 'status_lancamento'] = status
+        df_relatorio.at[idx, 'data_processamento'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df_relatorio.at[idx, 'observacao'] = obs
+        df_relatorio.at[idx, 'segundos'] = round(time.time() - t_ini, 1)
+        atualizar_kpis()
+
+    atualizar_kpis()
+    driver = criar_driver()
+    wait = WebDriverWait(driver, 15)
 
     try:
         log_container.info("🌐 Conectando ao ZUQ...")
@@ -615,16 +778,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
             campo_usuario.clear()
             digitar_devagar(campo_usuario, USUARIO, atraso=0.05)
-            
             try:
                 campo_senha = driver.find_element(By.NAME, "password")
             except NoSuchElementException:
                 campo_senha = driver.find_element(By.XPATH, "//input[@type='password']")
-                
             campo_senha.clear()
             digitar_devagar(campo_senha, SENHA, atraso=0.05)
             time.sleep(0.3)
-            
             try:
                 driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
             except NoSuchElementException:
@@ -638,199 +798,202 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         ultima_placa_filtrada = ""
 
         for idx, row in df.iterrows():
-            progress = (idx + 1) / total_registros
-            progress_bar.progress(progress, text=f"Processando {idx+1} de {total_registros}")
-            horario_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            t_ini = time.time()
+            feitos = idx
+            if feitos > 0:
+                eta = (time.time() - t0) / feitos * (total_registros - feitos)
+                texto_prog = f"Processando {idx + 1} de {total_registros} · ETA ~{int(eta)}s"
+            else:
+                texto_prog = f"Processando 1 de {total_registros}"
+            progress_bar.progress((idx + 1) / total_registros, text=texto_prog)
 
-            placa_str = str(row['placa']).strip()
+            placa_str = re.sub(r'[^A-Z0-9]', '', str(row['placa']).upper())
             km_str = str(row['km']).strip() if pd.notna(row['km']) else ""
-            cupom_str = str(row['cupom']) if 'cupom' in row and pd.notna(row['cupom']) else "0"
-            hora_str = str(row['hora']) if 'hora' in row and pd.notna(row['hora']) else "08:00:00"
+            cupom_str = str(row['cupom']) if pd.notna(row.get('cupom')) else "0"
+            hora_str = str(row['hora']) if pd.notna(row.get('hora')) else "08:00:00"
+            data_str = str(row['data']).strip()
+            litros_str = str(row['quantidade'])
+            preco_str = str(row['valor_unitario'])
 
-            log_container.write(f"📌 **[{idx+1}/{total_registros}] Placa {placa_str}** | Data: {row['data']} | Vol: {row['quantidade']}L | Preço/L: R$ {row['valor_unitario']} | KM: {km_str if km_str else 'N/A'}")
-
+            log_container.write(f"📌 **[{idx + 1}/{total_registros}] Placa {placa_str}** | Data: {data_str} | Vol: {litros_str}L | Preço/L: R$ {preco_str} | KM: {km_str or 'N/A'}")
             fechar_alerta_se_existir(driver, log_container)
 
-            existe, status_obs, ultima_placa_filtrada = conciliar_ou_criar_registro(
-                driver, wait, base_url, placa_str, str(row['data']), km_str, str(row['quantidade']), str(row['valor_unitario']), cupom_str, hora_str, FORNECEDOR, ultima_placa_filtrada, log_container
-            )
-
-            if existe:
-                qtd_lancados += 1
-                metric_lancados.metric("Processados", qtd_lancados)
-                
-                df_relatorio.at[idx, 'status_lancamento'] = 'Conciliado/Atualizado'
-                df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = status_obs
+            if pular_criticos and "❌" in str(row.get('alertas_auditoria', '')):
+                log_container.warning(f"⏭️ Ignorado por erro crítico de auditoria: {row['alertas_auditoria']}")
+                registrar(idx, 'Ignorado', f"Auditoria: {row['alertas_auditoria']}", 'erros', t_ini)
                 continue
 
+            acao, obs, ultima_placa_filtrada = conciliar_ou_criar_registro(
+                driver, wait, base_url, placa_str, data_str, km_str, litros_str, preco_str,
+                ultima_placa_filtrada, log_container
+            )
+
+            if acao == "OK":
+                registrar(idx, 'Já correto', obs, 'ok', t_ini)
+                continue
+            if acao == "ATUALIZADO":
+                registrar(idx, 'Atualizado', obs, 'atualizados', t_ini)
+                continue
+            if acao == "NAO_ENCONTRADA":
+                registrar(idx, 'Ignorado', obs, 'erros', t_ini)
+                continue
+            if acao == "ERRO":
+                registrar(idx, 'Erro', obs, 'erros', t_ini)
+                continue
+
+            # ---------------- acao == "CRIAR" ----------------
+            ultima_placa_filtrada = ""
+
             def abrir_formulario():
-                url_form = f"{base_url}/secure/manager/maintenance/#/fuel/new"
-                navegar_com_timeout_seguro(driver, url_form, timeout=10, log_container=log_container)
-                wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]")))
+                navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel/new", timeout=10, log_container=log_container)
+                wait.until(EC.element_to_be_clickable((By.XPATH, XP_VEICULO)))
 
             try:
                 executar_com_retry(abrir_formulario, max_tentativas=3, log_container=log_container)
             except Exception as e_nav:
                 log_container.error(f"❌ Falha no formulário: {e_nav}")
-                qtd_ignorados += 1
-                metric_ignorados.metric("Erros", qtd_ignorados)
-                
-                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
-                df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = f"Falha no formulário: {str(e_nav)}"
+                registrar(idx, 'Erro', f"Falha no formulário: {e_nav}", 'erros', t_ini)
                 continue
 
             def selecionar_veiculo():
-                elem_veiculo = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]")))
-                elem_veiculo.click()
+                wait.until(EC.element_to_be_clickable((By.XPATH, XP_VEICULO))).click()
                 time.sleep(0.3)
-                
-                input_veiculo = driver.find_element(By.XPATH, "//label[contains(text(),'Veículo')]/following::div[contains(@class,'selectize-input')][1]//input")
-                input_veiculo.send_keys(Keys.CONTROL + "a")
-                input_veiculo.send_keys(Keys.BACKSPACE)
-                digitar_devagar(input_veiculo, placa_str, atraso=0.05)
+                inp = driver.find_element(By.XPATH, XP_VEICULO + "//input")
+                inp.send_keys(Keys.CONTROL + "a")
+                inp.send_keys(Keys.BACKSPACE)
+                digitar_devagar(inp, placa_str, atraso=0.05)
                 time.sleep(1.0)
-                
-                opcoes_form = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{placa_str}')]")
-                if not opcoes_form:
+                opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{placa_str}')]")
+                if not opcoes:
                     return False
-
-                opcoes_form[0].click()
+                opcoes[0].click()
                 time.sleep(0.4)
                 return True
 
             try:
-                veiculo_encontrado = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container)
-                if not veiculo_encontrado:
+                if not executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container):
                     log_container.warning(f"⚠️ Veículo {placa_str} não localizado no ZUQ.")
-                    qtd_ignorados += 1
-                    metric_ignorados.metric("Erros", qtd_ignorados)
-                    
-                    df_relatorio.at[idx, 'status_lancamento'] = 'Ignorado'
-                    df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                    df_relatorio.at[idx, 'observacao'] = 'Veículo não localizado'
+                    registrar(idx, 'Ignorado', 'Veículo não localizado', 'erros', t_ini)
                     continue
             except Exception as e_v:
                 log_container.error(f"Erro no veículo {placa_str}: {e_v}")
-                qtd_ignorados += 1
-                metric_ignorados.metric("Erros", qtd_ignorados)
-                
-                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
-                df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = f"Erro no veículo: {str(e_v)}"
+                registrar(idx, 'Erro', f"Erro no veículo: {e_v}", 'erros', t_ini)
                 continue
 
             try:
-                data_iso = datetime.strptime(str(row['data']), "%d/%m/%Y").strftime("%Y-%m-%d")
-                campo_data = driver.find_element(By.ID, "fuelDate")
-                driver.execute_script("""
-                    var elem = arguments[0]; elem.value = arguments[1];
-                    elem.dispatchEvent(new Event('input', { bubbles: true }));
-                    elem.dispatchEvent(new Event('change', { bubbles: true }));
-                """, campo_data, data_iso)
-            except Exception: pass
+                data_iso = datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+                set_js(driver, driver.find_element(By.ID, "fuelDate"), data_iso)
+            except Exception:
+                pass
 
             try:
                 campo_hora = driver.find_element(By.ID, "additionTime")
                 campo_hora.click()
                 campo_hora.send_keys(Keys.CONTROL + "a")
                 campo_hora.send_keys(Keys.BACKSPACE)
-                hora_formatada = hora_str[:5] if len(hora_str) >= 5 else hora_str
-                digitar_devagar(campo_hora, hora_formatada, atraso=0.05)
-            except Exception: pass
+                digitar_devagar(campo_hora, hora_str[:5] if len(hora_str) >= 5 else hora_str, atraso=0.05)
+            except Exception:
+                pass
+
+            for xp, val in ((XP_LITROS, litros_str), (None, preco_str)):
+                try:
+                    elem = driver.find_element(By.NAME, "price") if xp is None else driver.find_element(By.XPATH, xp)
+                    set_js(driver, elem, val)
+                except Exception:
+                    pass
+
+            if km_str and km_str != "0":
+                try:
+                    set_js(driver, driver.find_element(By.XPATH, XP_KM), km_str)
+                except Exception:
+                    pass
 
             try:
-                campo_litros = driver.find_element(By.XPATH, "//label[contains(text(),'Litros')]/following::input[1]")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_litros, str(row['quantidade']))
-            except Exception: pass
-
-            try:
-                campo_preco = driver.find_element(By.NAME, "price")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_preco, str(row['valor_unitario']))
-            except Exception: pass
-
-            try:
-                if km_str and km_str != "0":
-                    campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
-                    driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_km, km_str)
-            except Exception: pass
-
-            try:
-                elem_fornecedor = wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(text(),'Fornecedor')]/following::div[contains(@class,'selectize-input')][1]")))
-                elem_fornecedor.click()
+                wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR))).click()
                 time.sleep(0.3)
-                
-                input_fornecedor = driver.find_element(By.XPATH, "//label[contains(text(),'Fornecedor')]/following::div[contains(@class,'selectize-input')][1]//input")
-                digitar_devagar(input_fornecedor, FORNECEDOR, atraso=0.05)
+                inp_f = driver.find_element(By.XPATH, XP_FORNECEDOR + "//input")
+                digitar_devagar(inp_f, FORNECEDOR, atraso=0.05)
                 time.sleep(1.0)
-                input_fornecedor.send_keys(Keys.ARROW_DOWN)
-                input_fornecedor.send_keys(Keys.ENTER)
+                inp_f.send_keys(Keys.ARROW_DOWN)
+                inp_f.send_keys(Keys.ENTER)
                 time.sleep(0.3)
-            except Exception: pass
+            except Exception:
+                pass
 
             try:
-                campo_doc = driver.find_element(By.XPATH, "//label[contains(text(),'Documento fiscal')]/following::input[1]")
-                driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", campo_doc, cupom_str)
-            except Exception: pass
+                set_js(driver, driver.find_element(By.XPATH, XP_DOC), cupom_str)
+            except Exception:
+                pass
 
-            def salvar_registro():
-                for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
-                    try:
-                        btn_salvar = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                        btn_salvar.click()
-                        time.sleep(1.2)
-
-                        erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
-                        if erros_km and erros_km[0].is_displayed():
-                            log_container.warning(f"⚠️ Conflito de Odômetro. Salvando sem KM...")
-                            campo_km = driver.find_element(By.XPATH, "//label[contains(text(),'Odometro') or contains(text(),'Hodômetro')]/following::input[1]")
-                            driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
-                            time.sleep(0.5)
-                            btn_salvar.click()
-                            time.sleep(1.2)
-
-                        return True
-                    except Exception: 
-                        continue
-                return False
-
-            salvo = False
+            salvo, erro_save = False, ""
             try:
-                salvo = executar_com_retry(salvar_registro, max_tentativas=3, log_container=log_container)
-                if salvo:
-                    ultima_placa_filtrada = ""
+                salvo = executar_com_retry(lambda: salvar_formulario(driver, wait, log_container),
+                                           max_tentativas=3, log_container=log_container)
             except Exception as e_save:
+                erro_save = f"Erro ao salvar: {e_save}"
                 log_container.error(f"❌ Erro ao salvar {placa_str}: {e_save}")
-                df_relatorio.at[idx, 'observacao'] = f"Erro ao salvar: {str(e_save)}"
 
             time.sleep(1.0)
             fechar_alerta_se_existir(driver, log_container)
 
             if salvo:
-                qtd_lancados += 1
-                metric_lancados.metric("Processados", qtd_lancados)
-                
-                df_relatorio.at[idx, 'status_lancamento'] = 'Criado Novo'
-                df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                df_relatorio.at[idx, 'observacao'] = 'Lançado com sucesso'
+                registrar(idx, 'Criado Novo', 'Lançado com sucesso', 'criados', t_ini)
             else:
-                qtd_ignorados += 1
-                metric_ignorados.metric("Erros", qtd_ignorados)
-                
-                df_relatorio.at[idx, 'status_lancamento'] = 'Erro'
-                df_relatorio.at[idx, 'data_processamento'] = horario_atual
-                if not df_relatorio.at[idx, 'observacao']:
-                    df_relatorio.at[idx, 'observacao'] = 'Falha ao salvar'
+                registrar(idx, 'Erro', erro_save or 'Falha ao salvar', 'erros', t_ini)
 
+        progress_bar.progress(1.0, text="Concluído")
         log_container.success("🎉 Processamento e conciliação finalizados!")
 
     except Exception as e:
         log_container.error(f"❌ Erro crítico: {e}")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
-    return df_relatorio
+    return df_relatorio, time.time() - t0
+
+
+# ---------------------------------------------------------
+# RELATÓRIO FINAL (persistente entre reruns)
+# ---------------------------------------------------------
+def mostrar_resultado():
+    res = st.session_state.get("resultado")
+    if not res:
+        return
+    df_res, tempo = res["df"], res["tempo"]
+
+    st.divider()
+    st.markdown("### 📋 Relatório de Conciliação")
+
+    contagem = df_res['status_lancamento'].value_counts()
+    sucesso = int(contagem.reindex(['Já correto', 'Atualizado', 'Criado Novo']).fillna(0).sum())
+    total = len(df_res)
+    litros = df_res['quantidade'].map(limpa_numero).sum()
+    media = df_res.loc[df_res['segundos'] > 0, 'segundos'].mean()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Taxa de sucesso", f"{sucesso / total * 100:.0f}%" if total else "—")
+    m2.metric("Tempo total", f"{tempo:.0f}s")
+    m3.metric("Média / registro", f"{media:.1f}s" if pd.notna(media) else "—")
+    m4.metric("Litros conciliados", f"{litros:,.0f}".replace(",", "."))
+
+    st.dataframe(
+        df_res[['placa', 'data', 'quantidade', 'valor_unitario', 'km',
+                'status_lancamento', 'observacao', 'segundos']],
+        **STRETCH
+    )
+
+    csv_data = df_res.to_csv(index=False, sep=';', encoding='utf-8-sig')
+    st.download_button(
+        label="📥 Baixar Relatório (CSV)",
+        data=csv_data,
+        file_name=f"relatorio_conciliacao_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        **STRETCH
+    )
+
 
 # ---------------------------------------------------------
 # INTERFACE PRINCIPAL
@@ -844,34 +1007,34 @@ if verificar_senha():
 
     with st.expander("⚙️ Parâmetros de Conexão ZUQ", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
-        usuario_zuq = c1.text_input("Usuário", value="manutencaoverdesmares")
-        senha_zuq = c2.text_input("Senha ZUQ", type="password")
-        url_zuq = c3.text_input("URL ZUQ", value="https://app.zuq.com.br")
-        fornecedor_zuq = c4.text_input("Fornecedor Padrão", value="POSTO GURI - MACEIÓ")
+        usuario_zuq = c1.text_input("Usuário", value=_segredo("ZUQ_USER", "manutencaoverdesmares"))
+        senha_zuq = c2.text_input("Senha ZUQ", type="password", value=_segredo("ZUQ_PASSWORD", ""))
+        url_zuq = c3.text_input("URL ZUQ", value=_segredo("ZUQ_URL", "https://app.zuq.com.br"))
+        fornecedor_zuq = c4.text_input("Fornecedor Padrão", value=_segredo("ZUQ_FORNECEDOR", "POSTO GURI - MACEIÓ"))
 
     st.markdown("<br>", unsafe_allow_html=True)
-
     col_upload, col_control = st.columns([1.1, 1], gap="large")
 
     with col_upload:
         st.markdown("### 📁 1. Ficheiro Liveposto")
         uploaded_file = st.file_uploader("Upload de relatório em PDF ou TXT", type=["pdf", "txt"], label_visibility="collapsed")
 
-        # Atualiza os dados sempre que um novo ficheiro for carregado ou substituído
         if uploaded_file is not None:
             file_id = f"{uploaded_file.name}_{uploaded_file.size}"
             if st.session_state.get("ultimo_arquivo_id") != file_id:
                 st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
                 st.session_state["ultimo_arquivo_id"] = file_id
+                st.session_state["resultado"] = None  # novo arquivo, limpa relatório antigo
         else:
             st.session_state["dados_df"] = None
             st.session_state["ultimo_arquivo_id"] = None
 
         if st.session_state.get("dados_df") is not None:
             if st.session_state["dados_df"].empty:
-                st.warning("⚠️ Nenhum registo encontrado neste PDF. Verifique se o PDF contém texto selecionável (não é imagem digitalizada) e se segue o layout do relatório Liveposto.")
+                st.warning("⚠️ Nenhum registo encontrado neste arquivo. Verifique se o PDF contém texto selecionável (não é imagem digitalizada) e se segue o layout do relatório Liveposto.")
+                st.session_state["dados_final"] = None
             else:
-                st.info("💡 **Conciliação Ativa**: Registos existentes no ZUQ com KM, Preço Unitário ou Litros divergentes serão **editados e corrigidos automaticamente** pelo robô.")
+                st.info("💡 **Conciliação Ativa**: registros existentes no ZUQ com KM, Preço ou Litros divergentes serão **editados automaticamente** pelo robô.")
 
                 df_editado = st.data_editor(
                     st.session_state["dados_df"],
@@ -884,30 +1047,44 @@ if verificar_senha():
                         "km": st.column_config.TextColumn("KM (Edição livre)", required=False),
                         "alertas_auditoria": st.column_config.TextColumn("Status", disabled=True),
                     },
-                    use_container_width=True,
                     num_rows="dynamic",
-                    height=350
+                    height=350,
+                    **STRETCH
                 )
-
                 st.session_state["dados_final"] = auditar_e_validar_dados(df_editado)
         else:
             st.session_state["dados_final"] = None
 
     with col_control:
         st.markdown("### 📊 2. Lançamento e Conciliação ZUQ")
-        
-        df_para_processar = st.session_state.get("dados_final", None)
+        df_para_processar = st.session_state.get("dados_final")
+        mp = calcular_metricas_pre(df_para_processar)
 
-        kpi1, kpi2, kpi3 = st.columns(3)
-        metric_total = kpi1.metric("Total a Analisar", len(df_para_processar) if df_para_processar is not None and not df_para_processar.empty else 0)
-        metric_lancados = kpi2.metric("Conciliados/Lançados", 0)
-        metric_ignorados = kpi3.metric("Erros", 0)
+        st.caption("Análise do arquivo")
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Registros", mp['registros'])
+        a2.metric("Litros totais", f"{mp['litros']:,.0f}".replace(",", "."))
+        a3.metric("Valor estimado", fmt_brl(mp['valor']))
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Preço médio/L", fmt_brl(mp['preco_medio']))
+        b2.metric("Com alertas", mp['com_alerta'])
+        b3.metric("Críticos / Dupl.", f"{mp['criticos']} / {mp['duplicados']}")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        btn_iniciar = st.button("🚀 Iniciar Conciliação e Correção no ZUQ", use_container_width=True)
+        st.caption("Execução em tempo real")
+        r1 = st.columns(3)
+        r2 = st.columns(3)
+        ui = {
+            'ok': r1[0].empty(), 'atualizados': r1[1].empty(), 'criados': r1[2].empty(),
+            'erros': r2[0].empty(), 'taxa': r2[1].empty(), 'tempo': r2[2].empty(),
+        }
+        for chave, rotulo in (('ok', "Já corretos"), ('atualizados', "Atualizados"), ('criados', "Criados"),
+                              ('erros', "Erros / Ignorados"), ('taxa', "Taxa de sucesso"), ('tempo', "Tempo decorrido")):
+            ui[chave].metric(rotulo, "—" if chave in ('taxa', 'tempo') else 0)
 
-        st.markdown("<br>", unsafe_allow_html=True)
+        pular_criticos = st.checkbox("Ignorar linhas com erro crítico (❌) na auditoria", value=True)
+
+        btn_iniciar = st.button("🚀 Iniciar Conciliação e Correção no ZUQ", **STRETCH)
+
         progress_bar = st.progress(0, text="Aguardando disparo...")
         log_container = st.container(height=300, border=True)
 
@@ -917,26 +1094,10 @@ if verificar_senha():
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ nas configurações acima.")
             else:
-                df_resultado = lancar_no_zuq(
-                    df_para_processar, url_zuq, usuario_zuq, senha_zuq, 
-                    fornecedor_zuq, log_container, 
-                    progress_bar, metric_lancados, metric_ignorados
+                df_resultado, tempo_total = lancar_no_zuq(
+                    df_para_processar, url_zuq, usuario_zuq, senha_zuq,
+                    fornecedor_zuq, log_container, progress_bar, ui, pular_criticos
                 )
+                st.session_state["resultado"] = {"df": df_resultado, "tempo": tempo_total}
 
-                if df_resultado is not None:
-                    csv_data = df_resultado.to_csv(index=False, sep=';', encoding='utf-8-sig')
-
-                    st.divider()
-                    st.markdown("### 📋 Relatório de Conciliação")
-                    st.dataframe(
-                        df_resultado[['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'status_lancamento', 'observacao']], 
-                        use_container_width=True
-                    )
-
-                    st.download_button(
-                        label="📥 Baixar Relatório (CSV)",
-                        data=csv_data,
-                        file_name=f"relatorio_conciliacao_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+    mostrar_resultado()
