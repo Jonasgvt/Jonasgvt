@@ -70,11 +70,9 @@ st.markdown("""
     }
 
     .stApp {
-        background: radial-gradient(circle at 0% 0%, rgba(10, 132, 255, 0.22) 0%, transparent 45%),
-                    radial-gradient(circle at 100% 40%, rgba(191, 90, 242, 0.18) 0%, transparent 50%),
-                    radial-gradient(circle at 50% 100%, rgba(48, 209, 88, 0.15) 0%, transparent 55%),
+        background: radial-gradient(circle at 0% 0%, rgba(10, 132, 255, 0.16) 0%, transparent 45%),
+                    radial-gradient(circle at 100% 40%, rgba(191, 90, 242, 0.12) 0%, transparent 50%),
                     #0b0f19 !important;
-        background-attachment: fixed !important;
         color: #FFFFFF !important;
     }
 
@@ -91,13 +89,11 @@ st.markdown("""
         align-items: center;
         justify-content: space-between;
         padding: 14px 20px;
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(28px) saturate(190%);
-        -webkit-backdrop-filter: blur(28px) saturate(190%);
+        background: rgba(22, 28, 45, 0.85);
         border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 20px;
-        margin-bottom: 1.8rem;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        border-radius: 18px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
     }
 
     .glass-logo {
@@ -121,13 +117,11 @@ st.markdown("""
     }
 
     div[data-testid="stMetric"] {
-        background: rgba(255, 255, 255, 0.06) !important;
-        backdrop-filter: blur(28px) saturate(190%) !important;
-        -webkit-backdrop-filter: blur(28px) saturate(190%) !important;
-        border: 1px solid rgba(255, 255, 255, 0.14) !important;
-        border-radius: 20px !important;
-        padding: 16px 20px !important;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25) !important;
+        background: rgba(24, 31, 48, 0.82) !important;
+        border: 1px solid rgba(255, 255, 255, 0.12) !important;
+        border-radius: 16px !important;
+        padding: 14px 18px !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2) !important;
     }
 
     div[data-testid="stMetricLabel"] {
@@ -140,7 +134,7 @@ st.markdown("""
 
     div[data-testid="stMetricValue"] {
         color: #FFFFFF !important;
-        font-size: 1.5rem !important;
+        font-size: 1.45rem !important;
         font-weight: 800 !important;
         letter-spacing: -0.5px;
     }
@@ -152,21 +146,20 @@ st.markdown("""
         font-size: 0.95rem !important;
         border: none !important;
         border-radius: 999px !important;
-        height: 3.2rem !important;
-        box-shadow: 0 8px 24px rgba(10, 132, 255, 0.4) !important;
-        transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        height: 3.1rem !important;
+        box-shadow: 0 4px 14px rgba(10, 132, 255, 0.35) !important;
+        transition: transform 0.15s ease, background 0.15s ease !important;
     }
 
     .stButton > button:hover {
-        transform: scale(0.98) !important;
-        box-shadow: 0 12px 28px rgba(10, 132, 255, 0.5) !important;
+        transform: scale(0.99) !important;
+        background: #1c8eff !important;
     }
 
     div[data-baseweb="input"] {
         background: rgba(255, 255, 255, 0.08) !important;
-        backdrop-filter: blur(28px) !important;
         border: 1px solid rgba(255, 255, 255, 0.14) !important;
-        border-radius: 14px !important;
+        border-radius: 12px !important;
         color: #FFFFFF !important;
     }
 
@@ -175,10 +168,9 @@ st.markdown("""
     }
 
     details {
-        background: rgba(255, 255, 255, 0.05) !important;
-        backdrop-filter: blur(28px) !important;
-        border: 1px solid rgba(255, 255, 255, 0.14) !important;
-        border-radius: 20px !important;
+        background: rgba(22, 28, 45, 0.8) !important;
+        border: 1px solid rgba(255, 255, 255, 0.12) !important;
+        border-radius: 16px !important;
         padding: 10px 16px !important;
         color: #FFFFFF !important;
     }
@@ -262,7 +254,7 @@ def verificar_senha():
 # ---------------------------------------------------------
 # UTILITÁRIOS
 # ---------------------------------------------------------
-def digitar_devagar(elemento, texto, atraso=0.05):
+def digitar_devagar(elemento, texto, atraso=0.015):
     for caractere in str(texto):
         elemento.send_keys(caractere)
         time.sleep(atraso)
@@ -273,7 +265,7 @@ def preencher_campo_angular(driver, elemento, valor):
     elemento.click()
     elemento.send_keys(Keys.CONTROL + "a")
     elemento.send_keys(Keys.BACKSPACE)
-    digitar_devagar(elemento, str(valor), atraso=0.04)
+    digitar_devagar(elemento, str(valor), atraso=0.015)
     elemento.send_keys(Keys.TAB)
 
 
@@ -818,14 +810,20 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 # AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
 # ---------------------------------------------------------
 class LogPersistente:
-    """Escreve no container e guarda o histórico para reexibir após reruns."""
+    """Escreve no container de forma leve e mantém janela recente para reruns."""
     def __init__(self, container, historico):
         self.c, self.h = container, historico
+        self._placeholder = container.empty()
+
+    def _render(self):
+        # Renderiza apenas as últimas 35 linhas em um único bloco markdown (zero acúmulo de nós DOM!)
+        linhas = [msg for _, msg in self.h[-35:]]
+        self._placeholder.markdown("\n\n".join(linhas))
 
     def _reg(self, nivel, msg):
         self.h.append((nivel, msg))
-        del self.h[:-500]
-        getattr(self.c, nivel)(msg)
+        del self.h[:-150]
+        self._render()
 
     def info(self, m): self._reg("info", m)
     def warning(self, m): self._reg("warning", m)
@@ -873,9 +871,10 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         df_relatorio.at[idx, 'data_processamento'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         df_relatorio.at[idx, 'observacao'] = obs
         df_relatorio.at[idx, 'segundos'] = round(time.time() - t_ini, 1)
-        # Guarda resultado parcial: se a página recarregar, nada se perde
-        st.session_state["resultado"] = {"df": df_relatorio.copy(), "tempo": time.time() - t0,
-                                         "parcial": True, "simulacao": simular}
+        # Guarda resultado parcial a cada 5 registos para não sobrecarregar a memória/rede do Streamlit
+        if (idx + 1) % 5 == 0 or (idx + 1) == total_registros:
+            st.session_state["resultado"] = {"df": df_relatorio.copy(), "tempo": time.time() - t0,
+                                             "parcial": True, "simulacao": simular}
         atualizar_kpis()
 
     atualizar_kpis()
@@ -1225,22 +1224,26 @@ if verificar_senha():
                         with st.expander(f"🔎 {len(_sem_km)} linhas sem KM: texto bruto lido do PDF"):
                             st.code("\n".join(_sem_km['linha_bruta'].astype(str).head(15)), language=None)
 
-                df_editado = st.data_editor(
-                    st.session_state["dados_df"],
-                    column_order=['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria'],
-                    column_config={
-                        "placa": st.column_config.TextColumn("Placa", required=True),
-                        "data": st.column_config.TextColumn("Data", required=True),
-                        "quantidade": st.column_config.TextColumn("Litros", required=True),
-                        "valor_unitario": st.column_config.TextColumn("Preço / L", required=True),
-                        "km": st.column_config.TextColumn("KM (Edição livre)", required=False),
-                        "alertas_auditoria": st.column_config.TextColumn("Status", disabled=True),
-                    },
-                    num_rows="dynamic",
-                    height=350,
-                    **STRETCH
-                )
-                st.session_state["dados_final"] = auditar_e_validar_dados(df_editado)
+                with st.form("form_edicao_dados", border=False):
+                    df_editado = st.data_editor(
+                        st.session_state["dados_df"],
+                        column_order=['placa', 'data', 'quantidade', 'valor_unitario', 'km', 'alertas_auditoria'],
+                        column_config={
+                            "placa": st.column_config.TextColumn("Placa", required=True),
+                            "data": st.column_config.TextColumn("Data", required=True),
+                            "quantidade": st.column_config.TextColumn("Litros", required=True),
+                            "valor_unitario": st.column_config.TextColumn("Preço / L", required=True),
+                            "km": st.column_config.TextColumn("KM (Edição livre)", required=False),
+                            "alertas_auditoria": st.column_config.TextColumn("Status", disabled=True),
+                        },
+                        num_rows="dynamic",
+                        height=350,
+                        **STRETCH
+                    )
+                    aplicar_edicao = st.form_submit_button("✅ Aplicar alterações na tabela", **STRETCH)
+                if aplicar_edicao or st.session_state.get("dados_final") is None:
+                    st.session_state["dados_df"] = auditar_e_validar_dados(df_editado)
+                    st.session_state["dados_final"] = st.session_state["dados_df"]
         else:
             st.session_state["dados_final"] = None
 
@@ -1284,9 +1287,8 @@ if verificar_senha():
         else:
             progress_bar = st.progress(0, text="Aguardando disparo...")
         log_container = st.container(height=300, border=True)
-        if not btn_iniciar:
-            for nivel, msg in st.session_state.get("log_hist", []):
-                getattr(log_container, nivel)(msg)
+        if not btn_iniciar and st.session_state.get("log_hist"):
+            log_container.markdown("\n\n".join(msg for _, msg in st.session_state["log_hist"][-35:]))
 
         if btn_iniciar:
             if df_para_processar is None or df_para_processar.empty:
