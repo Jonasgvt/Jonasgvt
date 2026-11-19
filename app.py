@@ -285,6 +285,7 @@ def limpa_numero(val_str):
     if not s:
         return 0.0
     if ',' in s and '.' in s:
+        # O último separador é o decimal; o outro é milhar
         if s.rfind(',') > s.rfind('.'):
             s = s.replace('.', '').replace(',', '.')
         else:
@@ -330,11 +331,9 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
             for page in reader.pages:
                 texto_pag = page.extract_text()
                 if texto_pag:
-                    lines.extend(texto_pag.split('
-'))
+                    lines.extend(texto_pag.split('\n'))
         else:
-            lines = file_bytes.decode('latin1', errors='ignore').split('
-')
+            lines = file_bytes.decode('latin1', errors='ignore').split('\n')
     except Exception as e:
         st.error(f"❌ Erro ao ler o arquivo: {e}")
         return pd.DataFrame()
@@ -366,13 +365,12 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
             m_hora = re.search(r'(\d{1,2}:\d{2}:\d{2})', line)
             hora = m_hora.group(1) if m_hora else "08:00:00"
 
-            # Cupom aparece entre a hora/data e a placa
             antes_placa = line[:m_placa.start()]
             if m_hora:
                 antes_placa = antes_placa[m_hora.end():]
             elif m_data:
                 antes_placa = antes_placa[m_data.end():]
-            cupons = re.findall(r'(\d{5,7})', antes_placa)
+            cupons = re.findall(r'\b(\d{5,7})\b', antes_placa)
             cupom = cupons[0] if cupons else "0"
 
             j = i + 1
@@ -396,7 +394,7 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
 
                     # Extrai KM Atual da linha principal removendo texto do dependente (ex.: CARRO 26)
                     depois_placa = line[m_placa.end():]
-                    depois_sem_dep = re.sub(r'CARRO\s+\d+', ' ', depois_placa, flags=re.IGNORECASE)
+                    depois_sem_dep = re.sub(r'\bCARRO\s+\d+\b', ' ', depois_placa, flags=re.IGNORECASE)
 
                     km = ""
                     # 1º Caso: KM >= 1.000 com ponto de milhar (ex.: 2.689106,13 ou 1.26987,39)
@@ -405,7 +403,7 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                         km = m_km_ponto.group(1).replace('.', '')
                     else:
                         # 2º Caso: KM < 1.000 sem ponto de milhar colado com Quant. (ex.: 629107,42 ou 86671,96)
-                        m_colado = re.search(r'(?<!\d)(\d+,\d{2})', depois_sem_dep)
+                        m_colado = re.search(r'(?<!\d)(\d+,\d{2})\b', depois_sem_dep)
                         if m_colado:
                             bloco_antes_virgula = m_colado.group(1).split(',')[0]
                             qtd_num = limpa_numero(quantidade)
@@ -619,6 +617,7 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
                 time.sleep(1.2)
                 sem_km = True
 
+            # Confirmação do salvamento
             if exigir_sair_do_novo:
                 limite = time.time() + 5
                 while "/fuel/new" in driver.current_url and time.time() < limite:
@@ -640,6 +639,8 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
 
 # ---------------------------------------------------------
 # CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ
+# Retorna (acao, observacao, ultima_placa_filtrada)
+# acao: OK | ATUALIZADO | CRIAR | ERRO | NAO_ENCONTRADA
 # ---------------------------------------------------------
 def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros, preco,
                                 ultima_placa_filtrada, log_container, simular=False):
@@ -704,12 +705,14 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                 except Exception:
                     pass
                 fechar_alerta_se_existir(driver, log_container)
+                # NÃO cria registro quando o filtro falha: evita duplicar abastecimento
                 return "ERRO", "Erro ao filtrar placa", ""
 
         target_litros = limpa_numero(litros)
         target_preco = limpa_numero(preco)
         target_km = re.sub(r'\D', '', str(km)) if km else ""
 
+        # --- Localiza candidatos pela data e pontua por litros/preço/KM ---
         candidatos = []
         for linha in driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]"):
             texto = linha.text
@@ -738,7 +741,8 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         tds_texto = [td.text.strip() for td in linha_encontrada.find_elements(By.TAG_NAME, "td")]
         tem_zerado = any(t in ("0,00", "0.00") for t in tds_texto)
-        precisa_editar = (target_km and not k_ok) or (target_preco > 0 and not p_ok)             or (target_litros > 0 and not l_ok) or tem_zerado
+        precisa_editar = (target_km and not k_ok) or (target_preco > 0 and not p_ok) \
+            or (target_litros > 0 and not l_ok) or tem_zerado
 
         if not precisa_editar:
             log_container.info("✅ Registro no ZUQ já está 100% correto.")
@@ -795,6 +799,7 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
         ok_save, nota = salvar_formulario(driver, wait, log_container)
         if ok_save:
             log_container.success(f"✅ Preço/Litros/KM atualizados no ZUQ para {placa}!")
+            # Saímos da lista: força novo filtro no próximo registro
             return "ATUALIZADO", "Preço e dados corrigidos no ZUQ" + (f" — {nota}" if nota else ""), ""
         return "ERRO", f"Falha ao salvar edição: {nota}", ""
 
@@ -825,6 +830,7 @@ class LogPersistente:
 
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
                   ui, pular_criticos=True, simular=False):
+    # Ordena ANTES de copiar para manter os índices alinhados com o relatório
     df = df.sort_values(by="placa", kind="stable").reset_index(drop=True)
     df_relatorio = df.copy()
     df_relatorio['status_lancamento'] = 'Pendente'
@@ -858,6 +864,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         df_relatorio.at[idx, 'data_processamento'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         df_relatorio.at[idx, 'observacao'] = obs
         df_relatorio.at[idx, 'segundos'] = round(time.time() - t_ini, 1)
+        # Guarda resultado parcial: se a página recarregar, nada se perde
         st.session_state["resultado"] = {"df": df_relatorio.copy(), "tempo": time.time() - t0,
                                          "parcial": True, "simulacao": simular}
         atualizar_kpis()
@@ -1133,7 +1140,7 @@ if verificar_senha():
             if st.session_state.get("ultimo_arquivo_id") != file_id:
                 st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
                 st.session_state["ultimo_arquivo_id"] = file_id
-                st.session_state["resultado"] = None
+                st.session_state["resultado"] = None  # novo arquivo, limpa relatório antigo
                 st.session_state["kpis"] = None
                 st.session_state["log_hist"] = []
         else:
@@ -1152,8 +1159,7 @@ if verificar_senha():
                     _sem_km = _df0[_df0['km'].astype(str).str.strip() == ""]
                     if not _sem_km.empty:
                         with st.expander(f"🔎 {len(_sem_km)} linhas sem KM: texto bruto lido do PDF"):
-                            st.code("
-".join(_sem_km['linha_bruta'].astype(str).head(15)), language=None)
+                            st.code("\n".join(_sem_km['linha_bruta'].astype(str).head(15)), language=None)
 
                 df_editado = st.data_editor(
                     st.session_state["dados_df"],
