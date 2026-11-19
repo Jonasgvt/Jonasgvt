@@ -423,7 +423,13 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                 j += 1
         i += 1
 
-    return auditar_e_validar_dados(pd.DataFrame(registos))
+    df_ext = pd.DataFrame(registos)
+    if not df_ext.empty:
+        df_ext = df_ext.assign(
+            _dt_ord=pd.to_datetime(df_ext['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
+            _hr_ord=df_ext['hora'].astype(str).str.strip()
+        ).sort_values(by=["_dt_ord", "_hr_ord", "placa"], kind="stable").drop(columns=["_dt_ord", "_hr_ord"]).reset_index(drop=True)
+    return auditar_e_validar_dados(df_ext)
 
 
 # ---------------------------------------------------------
@@ -831,7 +837,10 @@ class LogPersistente:
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
                   ui, pular_criticos=True, simular=False):
     # Ordena ANTES de copiar para manter os índices alinhados com o relatório
-    df = df.sort_values(by="placa", kind="stable").reset_index(drop=True)
+    df = df.assign(
+        _dt_ord=pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
+        _hr_ord=df['hora'].astype(str).str.strip()
+    ).sort_values(by=["placa", "_dt_ord", "_hr_ord"], kind="stable").drop(columns=["_dt_ord", "_hr_ord"]).reset_index(drop=True)
     df_relatorio = df.copy()
     df_relatorio['status_lancamento'] = 'Pendente'
     df_relatorio['data_processamento'] = ''
@@ -1017,6 +1026,22 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     preencher_campo_angular(driver, driver.find_element(By.XPATH, XP_KM), km_str)
                 except Exception:
                     pass
+
+            # Seleciona o combustível (obrigatório no ZUQ ao criar novo registro)
+            try:
+                xp_comb = "//label[contains(text(),'Combustível')]/following::div[contains(@class,'selectize-input')][1]"
+                wait.until(EC.element_to_be_clickable((By.XPATH, xp_comb))).click()
+                time.sleep(0.3)
+                inp_c = driver.find_element(By.XPATH, xp_comb + "//input")
+                prod_str = str(row.get('produto', 'DIESEL')).strip()
+                termo_comb = "Diesel S10" if "S10" in prod_str.upper() else ("Diesel" if "DIESEL" in prod_str.upper() else prod_str)
+                digitar_devagar(inp_c, termo_comb, atraso=0.05)
+                time.sleep(0.8)
+                inp_c.send_keys(Keys.ARROW_DOWN)
+                inp_c.send_keys(Keys.ENTER)
+                time.sleep(0.3)
+            except Exception:
+                pass
 
             try:
                 wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR))).click()
