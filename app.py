@@ -1027,21 +1027,60 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 except Exception:
                     pass
 
-            # Seleciona o combustível (obrigatório no ZUQ ao criar novo registro)
+            # Seleciona o combustível no <select ng-model="fuel.payable.id">
             try:
-                xp_comb = "//label[contains(text(),'Combustível')]/following::div[contains(@class,'selectize-input')][1]"
-                wait.until(EC.element_to_be_clickable((By.XPATH, xp_comb))).click()
+                prod_str = str(row.get('produto', 'DIESEL')).strip().upper()
+                # Ordem de prioridade exata conforme as opções do ZUQ: S-10 ADITIVADO / S-10 / DIESEL
+                if "S10" in prod_str or "S-10" in prod_str:
+                    prioridades = ["S-10 ADITIVADO", "S-10", "S10", "DIESEL"]
+                elif "DIESEL" in prod_str:
+                    prioridades = ["S-10", "S-10 ADITIVADO", "DIESEL"]
+                else:
+                    prioridades = [prod_str]
+
+                sel_el = wait.until(EC.presence_of_element_located(
+                    (By.XPATH, "//select[@ng-model='fuel.payable.id'] | //label[contains(.,'Combustível')]/following::select[1]")
+                ))
+                time.sleep(0.4)  # aguarda AngularJS carregar availableFuels após seleção do veículo
+
+                # Quando o veículo já tem combustível bloqueado na configuração (ex: image_f8a561.png),
+                # o <select> fica desabilitado (ng-disabled="... availableFuels.length < 2") e já vem preenchido!
+                esta_desabilitado = sel_el.get_attribute("disabled") is not None or not sel_el.is_enabled()
+                sel_obj = Select(sel_el)
+                valor_atual = sel_el.get_attribute("value") or ""
+
+                if esta_desabilitado:
+                    txt_atual = sel_obj.first_selected_option.text.strip() if sel_obj.options else ""
+                    log_container.info(f"🔒 Combustível fixo na configuração do veículo: {txt_atual or 'Automático'}")
+                elif not valor_atual or "?" in valor_atual:
+                    escolhido = None
+                    for alvo in prioridades:
+                        for opt in sel_obj.options:
+                            txt_opt = opt.text.strip().upper()
+                            if txt_opt == alvo or alvo in txt_opt:
+                                escolhido = opt.text
+                                break
+                        if escolhido:
+                            break
+
+                    if not escolhido:
+                        for opt in sel_obj.options:
+                            val_o = opt.get_attribute("value") or ""
+                            if val_o and "?" not in val_o and opt.text.strip():
+                                escolhido = opt.text
+                                break
+
+                    if escolhido:
+                        sel_obj.select_by_visible_text(escolhido)
+                        driver.execute_script(
+                            "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));"
+                            "if (window.angular) { angular.element(arguments[0]).triggerHandler('change'); }",
+                            sel_el
+                        )
+                        log_container.info(f"⛽ Combustível selecionado: {escolhido.strip()}")
                 time.sleep(0.3)
-                inp_c = driver.find_element(By.XPATH, xp_comb + "//input")
-                prod_str = str(row.get('produto', 'DIESEL')).strip()
-                termo_comb = "Diesel S10" if "S10" in prod_str.upper() else ("Diesel" if "DIESEL" in prod_str.upper() else prod_str)
-                digitar_devagar(inp_c, termo_comb, atraso=0.05)
-                time.sleep(0.8)
-                inp_c.send_keys(Keys.ARROW_DOWN)
-                inp_c.send_keys(Keys.ENTER)
-                time.sleep(0.3)
-            except Exception:
-                pass
+            except Exception as e_comb:
+                log_container.warning(f"⚠️ Aviso ao selecionar combustível: {e_comb}")
 
             try:
                 wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR))).click()
