@@ -668,7 +668,158 @@ def _limpar_campo_km_angular(driver):
     )
 
 
-def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
+
+def corrigir_conflito_hodometro_zuq(driver, wait, base_url, placa, data_str, km_alvo_str, log_container):
+    """
+    Vai até /secure/manager/maintenance/#/odometer, filtra a placa e clica em
+    'Invalidar medidores' (ng-click="voidMeters(e)") na leitura conflitante para destravar o KM.
+    """
+    km_alvo = int(re.sub(r'\D', '', str(km_alvo_str)) or 0)
+    if km_alvo <= 0:
+        return False
+
+    try:
+        log_container.info(f"🧭 Acessando aba Hodômetro para invalidar leitura conflitante de {placa} (KM alvo: {km_alvo})...")
+        navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=12, log_container=log_container)
+        time.sleep(1.5)
+
+        # Filtra a placa usando o botão de veículos (#btn-allvehicles)
+        wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
+        time.sleep(0.8)
+
+        select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
+        if select_filtro:
+            Select(select_filtro[0]).select_by_visible_text("Placa")
+            time.sleep(0.3)
+
+        input_modal = driver.find_element(By.XPATH, "//div[contains(@class,'selectize-input')]//input")
+        input_modal.click()
+        time.sleep(0.3)
+
+        for item in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//div[contains(@class,'item')]"):
+            try:
+                item.find_element(By.XPATH, ".//a[contains(@class,'remove')]").click()
+                time.sleep(0.15)
+            except Exception:
+                pass
+
+        input_modal.send_keys(Keys.CONTROL + "a")
+        input_modal.send_keys(Keys.BACKSPACE)
+        time.sleep(0.2)
+        digitar_devagar(input_modal, placa, atraso=0.015)
+
+        xp_opc = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]"
+        try:
+            WebDriverWait(driver, 2.5).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
+        except TimeoutException:
+            pass
+        opcoes = driver.find_elements(By.XPATH, xp_opc)
+        if not opcoes:
+            try:
+                driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
+            except Exception:
+                pass
+            return False
+
+        opcoes[0].click()
+        time.sleep(0.3)
+        try:
+            driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
+        except Exception:
+            input_modal.send_keys(Keys.ESCAPE)
+        time.sleep(0.4)
+
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))).click()
+        time.sleep(1.5)
+        fechar_alerta_se_existir(driver, log_container)
+
+        # Data curta no formato exibido na tabela de Odômetros: dd/mm/aa (ex: 04/11/26)
+        partes_dt = str(data_str).strip().split('/')
+        data_curta = f"{partes_dt[0]}/{partes_dt[1]}/{partes_dt[2][-2:]}" if len(partes_dt) == 3 else str(data_str)
+
+        linhas = driver.find_elements(By.XPATH, "//table//tbody//tr")
+        linha_alvo = None
+
+        # 1º Prioridade: linha marcada com alerta de inconsistência (⚠️)
+        for tr in linhas:
+            has_warn = len(tr.find_elements(By.XPATH, ".//*[contains(@class,'fa-exclamation') or contains(@class,'warning')]")) > 0
+            if has_warn:
+                linha_alvo = tr
+                break
+
+        # 2º Prioridade: linha da mesma data com leitura conflitante
+        if linha_alvo is None:
+            for tr in linhas:
+                txt = tr.text or ""
+                if data_curta in txt or data_str in txt:
+                    linha_alvo = tr
+                    break
+
+        # 3º Prioridade: linha mais recente com hodômetro maior que o KM alvo (causando conflito de regressão)
+        if linha_alvo is None:
+            for tr in linhas:
+                m_km_tr = re.search(r'([\d\.]+)\s*km', tr.text or "", flags=re.IGNORECASE)
+                if m_km_tr:
+                    km_tr = int(re.sub(r'\D', '', m_km_tr.group(1)) or 0)
+                    if km_tr > km_alvo:
+                        linha_alvo = tr
+                        break
+
+        if linha_alvo is None:
+            log_container.warning(f"⚠️ Nenhuma leitura conflitante localizada na aba Hodômetro para {placa}.")
+            return False
+
+        # Clica no botão dropdown (`button.dropdown-toggle` com `i.fa.fa-bars`) da linha
+        btn_menu = linha_alvo.find_element(By.XPATH, ".//button[contains(@class,'dropdown-toggle')] | .//button[.//i[contains(@class,'fa-bars')]]")
+        btn_menu.click()
+        time.sleep(0.5)
+
+        # Clica em `<a ng-click="voidMeters(e)">Invalidar medidores</a>` dentro do dropdown aberto
+        opcoes_void = linha_alvo.find_elements(
+            By.XPATH,
+            ".//ul[contains(@class,'dropdown-menu')]//a[contains(@ng-click,'voidMeters') or contains(.,'Invalidar medidores')]"
+        )
+        if not opcoes_void:
+            opcoes_void = driver.find_elements(
+                By.XPATH,
+                "//ul[contains(@class,'dropdown-menu')]//a[contains(@ng-click,'voidMeters') or contains(.,'Invalidar medidores')]"
+            )
+
+        clicou_void = False
+        for op_v in opcoes_void:
+            if op_v.is_displayed():
+                op_v.click()
+                clicou_void = True
+                time.sleep(1.0)
+                break
+
+        if not clicou_void:
+            log_container.warning("⚠️ Opção 'Invalidar medidores' não disponível nesta linha.")
+            return False
+
+        # Trata o modal de confirmação ("Confirma? Você tem certeza de que deseja marcar o odômetro/horímetro como inválido?")
+        fechar_alerta_se_existir(driver, log_container)
+        xp_conf = "//div[contains(@class,'modal') and contains(@style,'display: block') or contains(@class,'in')]//button[normalize-space()='Confirmar' or contains(.,'Confirmar')]"
+        try:
+            btn_conf = WebDriverWait(driver, 3.0).until(EC.element_to_be_clickable((By.XPATH, xp_conf)))
+            btn_conf.click()
+            time.sleep(1.2)
+        except TimeoutException:
+            for b in driver.find_elements(By.XPATH, "//button[normalize-space()='Confirmar']"):
+                if b.is_displayed():
+                    b.click()
+                    time.sleep(1.2)
+                    break
+
+        log_container.success(f"✅ Medidor conflitante invalidado na aba Hodômetro para {placa}! Reaplicando KM {km_alvo}...")
+        return True
+    except Exception as e_odo:
+        log_container.warning(f"⚠️ Não foi possível invalidar na aba Hodômetro: {e_odo}")
+        return False
+
+
+def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False,
+                      base_url="", placa="", data_str="", km_str=""):
     """Clica em Salvar e confirma o resultado. Retorna (ok, nota)."""
     for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
         try:
@@ -677,15 +828,39 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
             time.sleep(1.3)
 
             sem_km = False
+            nota_odo = ""
             erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
             if any(el.is_displayed() for el in erros_km):
-                log_container.warning("⚠️ Conflito de Odômetro no ZUQ. Limpando KM e salvando...")
-                _limpar_campo_km_angular(driver)
-                time.sleep(0.4)
-                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                btn.click()
-                time.sleep(1.3)
-                sem_km = True
+                log_container.warning("⚠️ Conflito de Odômetro no ZUQ! Tentando corrigir na aba Hodômetro...")
+                corrigiu_odo = False
+                if base_url and placa and km_str:
+                    url_antes = driver.current_url
+                    corrigiu_odo = corrigir_conflito_hodometro_zuq(
+                        driver, wait, base_url, placa, data_str, km_str, log_container
+                    )
+                    if corrigiu_odo:
+                        # Retorna ao formulário do abastecimento e reaplica o KM corrigido
+                        navegar_com_timeout_seguro(driver, url_antes, timeout=12, log_container=log_container)
+                        time.sleep(1.4)
+                        try:
+                            preencher_campo_angular(driver, driver.find_element(By.XPATH, XP_KM), km_str)
+                        except Exception:
+                            pass
+                        btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                        btn.click()
+                        time.sleep(1.3)
+                        nota_odo = f"Hodômetro ajustado para {km_str} km"
+
+                # Se ainda persistir o conflito após tentar ajustar na aba Hodômetro, salva sem KM como fallback seguro
+                erros_km_pos = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
+                if not corrigiu_odo or any(el.is_displayed() for el in erros_km_pos):
+                    log_container.warning("⚠️ Mantendo fallback: salvando sem KM para não travar o lote...")
+                    _limpar_campo_km_angular(driver)
+                    time.sleep(0.4)
+                    btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                    btn.click()
+                    time.sleep(1.3)
+                    sem_km = True
 
             # Confirmação do salvamento
             if exigir_sair_do_novo:
@@ -701,7 +876,7 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
                 if erros:
                     return False, f"Rejeitado pelo ZUQ: {' | '.join(erros)[:220]}"
 
-            return True, ("Salvo sem KM (conflito de odômetro)" if sem_km else "")
+            return True, ("Salvo sem KM (conflito de odômetro)" if sem_km else nota_odo)
         except Exception:
             continue
     return False, "Botão Salvar não encontrado"
@@ -898,7 +1073,10 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
             except Exception:
                 pass
 
-        ok_save, nota = salvar_formulario(driver, wait, log_container)
+        ok_save, nota = salvar_formulario(
+            driver, wait, log_container,
+            base_url=base_url, placa=placa, data_str=data, km_str=km
+        )
         if ok_save:
             log_container.success(f"✅ Preço/Litros/KM atualizados no ZUQ para {placa}!")
             # Saímos da lista: força novo filtro no próximo registro
@@ -1246,7 +1424,10 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
             salvo, nota_save = False, ""
             try:
-                salvo, nota_save = salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=True)
+                salvo, nota_save = salvar_formulario(
+                    driver, wait, log_container, exigir_sair_do_novo=True,
+                    base_url=base_url, placa=placa_str, data_str=data_str, km_str=km_str
+                )
             except Exception as e_save:
                 nota_save = f"Erro ao salvar: {e_save}"
                 log_container.error(f"❌ Erro ao salvar {placa_str}: {e_save}")
