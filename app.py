@@ -456,6 +456,23 @@ def auditar_e_validar_dados(df):
 
     datas = pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce')
 
+    # Deteta placas com possível erro de digitação (1 caractere diferente de outra placa mais frequente no arquivo)
+    placas_norm = df['placa'].astype(str).str.strip().str.upper().str.replace('-', '', regex=False)
+    contagem_placas = placas_norm.value_counts().to_dict()
+    sugestao_placa = {}
+    placas_unicas = list(contagem_placas.keys())
+    for p in placas_unicas:
+        if len(p) != 7:
+            continue
+        candidatas = [
+            q for q in placas_unicas
+            if q != p and len(q) == 7
+            and sum(a != b for a, b in zip(p, q)) == 1
+            and contagem_placas[q] > contagem_placas[p]
+        ]
+        if len(candidatas) == 1:
+            sugestao_placa[p] = candidatas[0]
+
     chave = df[['placa', 'data', 'hora', 'cupom', 'quantidade']].astype(str).agg('|'.join, axis=1)
     duplicado = chave.duplicated(keep='first')
 
@@ -504,6 +521,8 @@ def auditar_e_validar_dados(df):
             alertas.append("🔁 Duplicado")
         if regressao.loc[idx]:
             alertas.append("⚠️ KM menor que o anterior")
+        if placa in sugestao_placa:
+            alertas.append(f"⚠️ Placa parecida com {sugestao_placa[placa]} (1 dígito)")
 
         alertas_col.append(" | ".join(alertas) if alertas else "✅ Prontos para conciliar")
 
@@ -734,6 +753,35 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                 except TimeoutException:
                     pass
                 opcoes = driver.find_elements(By.XPATH, xp_opc_f)
+                placa_corrigida_de = ""
+                if not opcoes and len(placa) == 7:
+                    # Fallback inteligente: pesquisa pelos últimos 4 caracteres (ex: 7D51) para pegar erro de 1 dígito do posto
+                    sufixo = placa[-4:]
+                    input_modal.send_keys(Keys.CONTROL + "a")
+                    input_modal.send_keys(Keys.BACKSPACE)
+                    time.sleep(0.2)
+                    digitar_devagar(input_modal, sufixo, atraso=0.015)
+                    xp_opc_suf = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{sufixo}')]"
+                    try:
+                        WebDriverWait(driver, 2.0).until(EC.presence_of_element_located((By.XPATH, xp_opc_suf)))
+                    except TimeoutException:
+                        pass
+                    candidatos_zuq = []
+                    for el_op in driver.find_elements(By.XPATH, xp_opc_suf):
+                        m_p_zuq = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', el_op.text.upper().replace('-', ''))
+                        if m_p_zuq:
+                            p_cand = m_p_zuq.group(1)
+                            if len(p_cand) == 7 and sum(a != b for a, b in zip(placa, p_cand)) == 1:
+                                candidatos_zuq.append((p_cand, el_op))
+                    # Deduplica por placa candidata
+                    placas_distintas = {p for p, _ in candidatos_zuq}
+                    if len(placas_distintas) == 1:
+                        placa_nova = next(iter(placas_distintas))
+                        opcoes = [el for p, el in candidatos_zuq if p == placa_nova]
+                        placa_corrigida_de = placa
+                        placa = placa_nova
+                        log_container.warning(f"🔄 Placa {placa_corrigida_de} não existe no ZUQ; corrigida automaticamente para **{placa}** (1 dígito divergente).")
+
                 if not opcoes:
                     log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no ZUQ!")
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
@@ -1012,6 +1060,10 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 driver, wait, base_url, placa_str, data_str, km_str, litros_str, preco_str,
                 ultima_placa_filtrada, log_container, simular
             )
+            if ultima_placa_filtrada and ultima_placa_filtrada != placa_str:
+                obs = f"{obs} (Placa corrigida: {placa_str} -> {ultima_placa_filtrada})"
+                placa_str = ultima_placa_filtrada
+                df_relatorio.at[idx, 'placa'] = placa_str
 
             if acao == "OK":
                 registrar(idx, 'Já correto', obs, 'ok', t_ini)
