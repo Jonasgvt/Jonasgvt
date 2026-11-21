@@ -423,6 +423,15 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                 j += 1
         i += 1
 
+    posto_detectado = ""
+    for ln in lines[:25]:
+        m_emp = re.search(r'Empresa:\s*(.+)', ln, flags=re.IGNORECASE)
+        if m_emp and "GROWTH" not in m_emp.group(1).upper():
+            posto_detectado = m_emp.group(1).strip()
+            break
+    if posto_detectado:
+        st.session_state["posto_detectado_pdf"] = posto_detectado
+
     df_ext = pd.DataFrame(registos)
     if not df_ext.empty:
         df_ext = df_ext.assign(
@@ -857,26 +866,44 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 # AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
 # ---------------------------------------------------------
 class LogPersistente:
-    """Escreve no container de forma leve e mantém janela recente para reruns."""
+    """Exibe apenas o registro atual em execução, apagando o anterior com transição digitando."""
     def __init__(self, container, historico):
         self.c, self.h = container, historico
         self._placeholder = container.empty()
+        self._atual = []
 
-    def _render(self):
-        # Renderiza apenas as últimas 35 linhas em um único bloco markdown (zero acúmulo de nós DOM!)
-        linhas = [msg for _, msg in self.h[-35:]]
-        self._placeholder.markdown("\n\n".join(linhas))
+    def _render(self, animar_ultima=False):
+        if not self._atual:
+            self._placeholder.empty()
+            return
+        anteriores = self._atual[:-1]
+        ultima = self._atual[-1]
+        prefixo = "\n\n".join(anteriores)
+        if animar_ultima and len(ultima) > 4:
+            # Efeito rápido de digitação (~0.18s total) sem atrasar o robô
+            passo = max(2, len(ultima) // 14)
+            for k in range(passo, len(ultima) + 1, passo):
+                parcial = ultima[:k] + " ▌"
+                bloco = f"{prefixo}\n\n{parcial}" if prefixo else parcial
+                self._placeholder.markdown(bloco)
+                time.sleep(0.012)
+        bloco_final = f"{prefixo}\n\n{ultima}" if prefixo else ultima
+        self._placeholder.markdown(bloco_final)
+        self.h[:] = [("item", x) for x in self._atual]
 
-    def _reg(self, nivel, msg):
-        self.h.append((nivel, msg))
-        del self.h[:-150]
-        self._render()
+    def _reg(self, nivel, msg, animar=True):
+        # Quando inicia um novo veículo (📌), apaga o anterior e limpa o painel
+        if msg.startswith("📌") or msg.startswith("🎉"):
+            self._atual = [msg]
+        else:
+            self._atual.append(msg)
+        self._render(animar_ultima=animar)
 
-    def info(self, m): self._reg("info", m)
-    def warning(self, m): self._reg("warning", m)
-    def error(self, m): self._reg("error", m)
-    def success(self, m): self._reg("success", m)
-    def write(self, m): self._reg("write", m)
+    def info(self, m): self._reg("info", m, animar=True)
+    def warning(self, m): self._reg("warning", m, animar=True)
+    def error(self, m): self._reg("error", m, animar=True)
+    def success(self, m): self._reg("success", m, animar=True)
+    def write(self, m): self._reg("write", m, animar=True)
 
 
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
@@ -1256,14 +1283,32 @@ def mostrar_resultado():
         **STRETCH
     )
 
+    col_dl1, col_dl2 = st.columns(2)
     csv_data = df_res.to_csv(index=False, sep=';', encoding='utf-8-sig')
-    st.download_button(
-        label="📥 Baixar Relatório Completo (CSV)",
+    col_dl1.download_button(
+        label="📥 Baixar Relatório (CSV)",
         data=csv_data,
         file_name=f"{prefixo}_conciliacao_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
         **STRETCH
     )
+
+    try:
+        buf_xlsx = io.BytesIO()
+        cols_export = [c for c in ['placa', 'data', 'hora', 'cupom', 'produto', 'quantidade',
+                                   'valor_unitario', 'valor_total', 'km', 'status_lancamento',
+                                   'observacao', 'data_processamento', 'segundos'] if c in df_res.columns]
+        with pd.ExcelWriter(buf_xlsx) as writer:
+            df_res[cols_export].to_excel(writer, index=False, sheet_name="Conciliacao_ZUQ")
+        col_dl2.download_button(
+            label="📊 Baixar Relatório (Excel .xlsx)",
+            data=buf_xlsx.getvalue(),
+            file_name=f"{prefixo}_conciliacao_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            **STRETCH
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------
@@ -1283,6 +1328,10 @@ if verificar_senha():
         url_zuq = c3.text_input("URL ZUQ", value=_segredo("ZUQ_URL", "https://app.zuq.com.br"))
         fornecedor_zuq = c4.text_input("Fornecedor Padrão", value=_segredo("ZUQ_FORNECEDOR", "POSTO GURI - MACEIÓ"))
 
+    posto_pdf = st.session_state.get("posto_detectado_pdf", "")
+    if posto_pdf and posto_pdf.upper() not in fornecedor_zuq.upper():
+        st.warning(f"⛽ O ficheiro carregado parece ser de **{posto_pdf}**, mas o Fornecedor configurado está como **{fornecedor_zuq}**. Ajuste em *Parâmetros de Conexão ZUQ* se necessário.")
+
     st.markdown("<br>", unsafe_allow_html=True)
     col_upload, col_control = st.columns([1.1, 1], gap="large")
 
@@ -1301,6 +1350,7 @@ if verificar_senha():
         else:
             st.session_state["dados_df"] = None
             st.session_state["ultimo_arquivo_id"] = None
+            st.session_state["posto_detectado_pdf"] = ""
 
         if st.session_state.get("dados_df") is not None:
             if st.session_state["dados_df"].empty:
@@ -1378,9 +1428,9 @@ if verificar_senha():
             progress_bar = st.progress(1.0, text="Concluído")
         else:
             progress_bar = st.progress(0, text="Aguardando disparo...")
-        log_container = st.container(height=300, border=True)
+        log_container = st.container(height=165, border=True)
         if not btn_iniciar and st.session_state.get("log_hist"):
-            log_container.markdown("\n\n".join(msg for _, msg in st.session_state["log_hist"][-35:]))
+            log_container.markdown("\n\n".join(msg for _, msg in st.session_state["log_hist"]))
 
         if btn_iniciar:
             if df_para_processar is None or df_para_processar.empty:
