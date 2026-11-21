@@ -582,18 +582,54 @@ def criar_driver():
 
 
 def erros_visiveis(driver):
-    """Mensagens de validação/erro visíveis na tela (heurística)."""
+    """Captura alertas de erro e também identifica campos AngularJS com ng-invalid."""
     xp = ("//*[contains(@class,'alert-danger')] | "
           "//*[contains(@class,'has-error')]//*[contains(@class,'help-block')]")
     textos = []
     for el in driver.find_elements(By.XPATH, xp):
         try:
             t = el.text.strip()
-            if el.is_displayed() and len(t) > 2:
+            if el.is_displayed() and len(t) > 2 and t not in textos:
                 textos.append(t)
         except Exception:
             pass
+
+    if not textos:
+        # Inspeciona campos obrigatórios/inválidos do AngularJS (ex.: Fornecedor, Combustível, Natureza)
+        campos_inv = driver.find_elements(By.CSS_SELECTOR, "input.ng-invalid, select.ng-invalid, .selectize-control + input.ng-invalid")
+        nomes_inv = []
+        for c in campos_inv:
+            try:
+                lbl = driver.execute_script(
+                    "var p = arguments[0].closest('div');"
+                    "while (p && !p.querySelector('label')) { p = p.parentElement; }"
+                    "return p && p.querySelector('label') ? p.querySelector('label').innerText.trim() : '';",
+                    c
+                )
+                msg_err = c.get_attribute("data-error-message") or ""
+                item = f"{lbl} ({msg_err})".strip(" ()") if lbl else msg_err
+                if item and item not in nomes_inv:
+                    nomes_inv.append(item)
+            except Exception:
+                pass
+        if nomes_inv:
+            textos.append("Campos pendentes/inválidos: " + ", ".join(nomes_inv))
     return textos
+
+
+def _limpar_campo_km_angular(driver):
+    campo_km = driver.find_element(By.XPATH, XP_KM)
+    campo_km.click()
+    campo_km.send_keys(Keys.CONTROL + "a")
+    campo_km.send_keys(Keys.BACKSPACE)
+    driver.execute_script(
+        "arguments[0].value = '';"
+        "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+        "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));"
+        "arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));"
+        "if (window.angular) { var el = angular.element(arguments[0]); el.val(''); el.triggerHandler('input'); el.triggerHandler('change'); }",
+        campo_km
+    )
 
 
 def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
@@ -602,32 +638,32 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
         try:
             btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
             btn.click()
-            time.sleep(1.2)
+            time.sleep(1.3)
 
             sem_km = False
             erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
-            if erros_km and erros_km[0].is_displayed():
-                log_container.warning("⚠️ Conflito de Odômetro. Salvando sem KM...")
-                campo_km = driver.find_element(By.XPATH, XP_KM)
-                driver.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo_km)
-                time.sleep(0.5)
+            if any(el.is_displayed() for el in erros_km):
+                log_container.warning("⚠️ Conflito de Odômetro no ZUQ. Limpando KM e salvando...")
+                _limpar_campo_km_angular(driver)
+                time.sleep(0.4)
+                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
                 btn.click()
-                time.sleep(1.2)
+                time.sleep(1.3)
                 sem_km = True
 
             # Confirmação do salvamento
             if exigir_sair_do_novo:
-                limite = time.time() + 5
+                limite = time.time() + 4
                 while "/fuel/new" in driver.current_url and time.time() < limite:
-                    time.sleep(0.5)
+                    time.sleep(0.4)
                 if "/fuel/new" in driver.current_url:
                     erros = erros_visiveis(driver)
-                    detalhe = f": {' | '.join(erros)[:200]}" if erros else " (permaneceu na tela de novo registro)"
+                    detalhe = f": {' | '.join(erros)[:220]}" if erros else " (permaneceu na tela de novo registro)"
                     return False, "Formulário não foi salvo" + detalhe
             else:
                 erros = erros_visiveis(driver)
                 if erros:
-                    return False, f"Rejeitado pelo ZUQ: {' | '.join(erros)[:200]}"
+                    return False, f"Rejeitado pelo ZUQ: {' | '.join(erros)[:220]}"
 
             return True, ("Salvo sem KM (conflito de odômetro)" if sem_km else "")
         except Exception:
@@ -1042,7 +1078,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 ))
                 time.sleep(0.4)  # aguarda AngularJS carregar availableFuels após seleção do veículo
 
-                # Quando o veículo já tem combustível bloqueado na configuração (ex: image_f8a561.png),
+                # Quando o veículo já tem combustível bloqueado na configuração,
                 # o <select> fica desabilitado (ng-disabled="... availableFuels.length < 2") e já vem preenchido!
                 esta_desabilitado = sel_el.get_attribute("disabled") is not None or not sel_el.is_enabled()
                 sel_obj = Select(sel_el)
@@ -1082,16 +1118,22 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 log_container.warning(f"⚠️ Aviso ao selecionar combustível: {e_comb}")
 
             try:
-                wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR))).click()
-                time.sleep(0.3)
-                inp_f = driver.find_element(By.XPATH, XP_FORNECEDOR + "//input")
-                digitar_devagar(inp_f, FORNECEDOR, atraso=0.05)
-                time.sleep(1.0)
-                inp_f.send_keys(Keys.ARROW_DOWN)
-                inp_f.send_keys(Keys.ENTER)
-                time.sleep(0.3)
-            except Exception:
-                pass
+                el_forn = wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR)))
+                el_forn.click()
+                time.sleep(0.25)
+                inp_f = el_forn.find_element(By.XPATH, ".//input")
+                inp_f.send_keys(Keys.CONTROL + "a")
+                inp_f.send_keys(Keys.BACKSPACE)
+                digitar_devagar(inp_f, FORNECEDOR, atraso=0.02)
+                time.sleep(0.8)
+                opcoes_f = driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-dropdown-content') and not(contains(@style,'display: none'))]//div[contains(@class,'option')]")
+                if opcoes_f:
+                    opcoes_f[0].click()
+                else:
+                    inp_f.send_keys(Keys.ENTER)
+                time.sleep(0.25)
+            except Exception as e_forn:
+                log_container.warning(f"⚠️ Aviso ao selecionar fornecedor: {e_forn}")
 
             try:
                 set_js(driver, driver.find_element(By.XPATH, XP_DOC), cupom_str)
@@ -1100,9 +1142,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
             salvo, nota_save = False, ""
             try:
-                salvo, nota_save = executar_com_retry(
-                    lambda: salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=True),
-                    max_tentativas=3, log_container=log_container)
+                salvo, nota_save = salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=True)
             except Exception as e_save:
                 nota_save = f"Erro ao salvar: {e_save}"
                 log_container.error(f"❌ Erro ao salvar {placa_str}: {e_save}")
