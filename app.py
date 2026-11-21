@@ -373,7 +373,15 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                     break
 
                 if any(comb in sub_line.upper() for comb in combustiveis_validos):
-                    produto_nome = "DIESEL B S10 ADITIVADO" if "DIESEL" in sub_line.upper() else sub_line.split()[0]
+                    u_sub = sub_line.upper()
+                    if "DIESEL" in u_sub:
+                        produto_nome = "DIESEL B S10 ADITIVADO" if "ADITIV" in u_sub or "S10" in u_sub or "S-10" in u_sub else "DIESEL"
+                    elif "GASOLINA" in u_sub:
+                        produto_nome = "GASOLINA ADITIVADA" if "ADITIV" in u_sub else "GASOLINA COMUM"
+                    elif "ETANOL" in u_sub or "ALCOOL" in u_sub or "ÁLCOOL" in u_sub:
+                        produto_nome = "ETANOL"
+                    else:
+                        produto_nome = sub_line.split()[0]
 
                     nums_validos = re.findall(r'\d+(?:\.\d{3})*,\d+', sub_line)
                     vlr_unit, quantidade, valor_total = "0,00", "0,00", "0,00"
@@ -710,10 +718,13 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                 input_modal.send_keys(Keys.CONTROL + "a")
                 input_modal.send_keys(Keys.BACKSPACE)
                 time.sleep(0.3)
-                digitar_devagar(input_modal, placa, atraso=0.05)
-                time.sleep(1.2)
-
-                opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]")
+                digitar_devagar(input_modal, placa, atraso=0.015)
+                xp_opc_f = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]"
+                try:
+                    WebDriverWait(driver, 2.5).until(EC.presence_of_element_located((By.XPATH, xp_opc_f)))
+                except TimeoutException:
+                    pass
+                opcoes = driver.find_elements(By.XPATH, xp_opc_f)
                 if not opcoes:
                     log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no ZUQ!")
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
@@ -1015,9 +1026,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 inp = driver.find_element(By.XPATH, XP_VEICULO + "//input")
                 inp.send_keys(Keys.CONTROL + "a")
                 inp.send_keys(Keys.BACKSPACE)
-                digitar_devagar(inp, placa_str, atraso=0.05)
-                time.sleep(1.0)
-                opcoes = driver.find_elements(By.XPATH, f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{placa_str}')]")
+                digitar_devagar(inp, placa_str, atraso=0.015)
+                xp_opc_v = f"//div[contains(@class,'selectize-dropdown')]//div[contains(.,'{placa_str}')]"
+                try:
+                    WebDriverWait(driver, 2.5).until(EC.presence_of_element_located((By.XPATH, xp_opc_v)))
+                except TimeoutException:
+                    pass
+                opcoes = driver.find_elements(By.XPATH, xp_opc_v)
                 if not opcoes:
                     return False
                 opcoes[0].click()
@@ -1070,6 +1085,12 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     prioridades = ["S-10 ADITIVADO", "S-10", "S10", "DIESEL"]
                 elif "DIESEL" in prod_str:
                     prioridades = ["S-10", "S-10 ADITIVADO", "DIESEL"]
+                elif "GASOLINA" in prod_str and "ADITIV" in prod_str:
+                    prioridades = ["GASOLINA ADITIVADA", "GASOLINA C ADITIVADA", "GASOLINA COMUM", "GASOLINA"]
+                elif "GASOLINA" in prod_str:
+                    prioridades = ["GASOLINA COMUM", "GASOLINA C COMUM", "GASOLINA", "GASOLINA ADITIVADA"]
+                elif "ETANOL" in prod_str or "ALCOOL" in prod_str or "ÁLCOOL" in prod_str:
+                    prioridades = ["ETANOL", "ETANOL HIDRATADO", "ÁLCOOL", "ALCOOL"]
                 else:
                     prioridades = [prod_str]
 
@@ -1078,7 +1099,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 ))
                 time.sleep(0.4)  # aguarda AngularJS carregar availableFuels após seleção do veículo
 
-                # Quando o veículo já tem combustível bloqueado na configuração,
+                # Quando o veículo já tem combustível bloqueado na configuração (ex: image_f8a561.png),
                 # o <select> fica desabilitado (ng-disabled="... availableFuels.length < 2") e já vem preenchido!
                 esta_desabilitado = sel_el.get_attribute("disabled") is not None or not sel_el.is_enabled()
                 sel_obj = Select(sel_el)
@@ -1124,9 +1145,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 inp_f = el_forn.find_element(By.XPATH, ".//input")
                 inp_f.send_keys(Keys.CONTROL + "a")
                 inp_f.send_keys(Keys.BACKSPACE)
-                digitar_devagar(inp_f, FORNECEDOR, atraso=0.02)
-                time.sleep(0.8)
-                opcoes_f = driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-dropdown-content') and not(contains(@style,'display: none'))]//div[contains(@class,'option')]")
+                digitar_devagar(inp_f, FORNECEDOR, atraso=0.015)
+                xp_opc_forn = "//div[contains(@class,'selectize-dropdown-content') and not(contains(@style,'display: none'))]//div[contains(@class,'option')]"
+                try:
+                    WebDriverWait(driver, 2.0).until(EC.element_to_be_clickable((By.XPATH, xp_opc_forn)))
+                except TimeoutException:
+                    pass
+                opcoes_f = driver.find_elements(By.XPATH, xp_opc_forn)
                 if opcoes_f:
                     opcoes_f[0].click()
                 else:
@@ -1198,15 +1223,42 @@ def mostrar_resultado():
     m3.metric("Média / registro", f"{media:.1f}s" if pd.notna(media) else "—")
     m4.metric("Litros conciliados", f"{litros:,.0f}".replace(",", "."))
 
+    falhas_mask = ~ok_mask
+    qtd_falhas = int(falhas_mask.sum())
+
+    c_filt, c_reproc = st.columns([2, 1])
+    filtro_status = c_filt.radio(
+        "Visualizar registos:",
+        options=[f"Todos ({len(df_res)})", f"Somente Erros / Pendentes ({qtd_falhas})", f"Somente Concluídos ({sucesso})"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    if filtro_status.startswith("Somente Erros"):
+        df_visivel = df_res[falhas_mask]
+    elif filtro_status.startswith("Somente Concluídos"):
+        df_visivel = df_res[ok_mask]
+    else:
+        df_visivel = df_res
+
+    if qtd_falhas > 0 and not res.get("simulacao"):
+        if c_reproc.button(f"🔄 Carregar {qtd_falhas} falha(s) para reprocessar", **STRETCH):
+            cols_orig = [c for c in df_res.columns if c not in ('status_lancamento', 'data_processamento', 'observacao', 'segundos')]
+            st.session_state["dados_df"] = auditar_e_validar_dados(df_res.loc[falhas_mask, cols_orig].reset_index(drop=True))
+            st.session_state["dados_final"] = st.session_state["dados_df"]
+            st.session_state["resultado"] = None
+            st.session_state["kpis"] = None
+            st.session_state["log_hist"] = []
+            st.rerun()
+
     st.dataframe(
-        df_res[['placa', 'data', 'quantidade', 'valor_unitario', 'km',
-                'status_lancamento', 'observacao', 'segundos']],
+        df_visivel[['placa', 'data', 'quantidade', 'valor_unitario', 'km',
+                    'status_lancamento', 'observacao', 'segundos']],
         **STRETCH
     )
 
     csv_data = df_res.to_csv(index=False, sep=';', encoding='utf-8-sig')
     st.download_button(
-        label="📥 Baixar Relatório (CSV)",
+        label="📥 Baixar Relatório Completo (CSV)",
         data=csv_data,
         file_name=f"{prefixo}_conciliacao_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
