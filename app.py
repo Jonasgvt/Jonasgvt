@@ -8,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import pypdf
 import streamlit as st
+import streamlit.components.v1 as components
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -1092,18 +1093,44 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 # AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
 # ---------------------------------------------------------
 class LogPersistente:
-    """Mantém o histórico completo no painel com efeito de digitação na linha nova (sem atrasar a automação)."""
-    def __init__(self, container, historico):
+    """Mantém o histórico completo no painel com efeito de digitação na linha nova e auto-scroll."""
+    def __init__(self, container, historico, scroll_placeholder=None):
         self.c, self.h = container, historico
         self._placeholder = container.empty()
+        self._scroll_ph = scroll_placeholder
         self._linhas = []
+        self._tick = 0
+
+    def _rolar_para_baixo(self):
+        if self._scroll_ph is None:
+            return
+        self._tick += 1
+        with self._scroll_ph:
+            components.html(
+                f"""<script>
+                (function() {{
+                    const boxes = window.parent.document.querySelectorAll('div[data-testid="stVerticalBlockBorderWrapper"]');
+                    boxes.forEach(b => {{
+                        const inner = b.querySelector('div[style*="overflow"]');
+                        if (inner && inner.scrollHeight > inner.clientHeight) {{
+                            inner.scrollTop = inner.scrollHeight;
+                        }}
+                        if (b.scrollHeight > b.clientHeight) {{
+                            b.scrollTop = b.scrollHeight;
+                        }}
+                    }});
+                }})();
+                // tick {self._tick}
+                </script>""",
+                height=0,
+            )
 
     def _render(self, animar_ultima=False):
         if not self._linhas:
             self._placeholder.empty()
             return
         ultima = self._linhas[-1]
-        visiveis = self._linhas[-35:]
+        visiveis = self._linhas[-40:]
         if animar_ultima and len(ultima) > 4:
             ant_v = "\n\n".join(visiveis[:-1])
             passo = max(5, len(ultima) // 8)
@@ -1114,6 +1141,7 @@ class LogPersistente:
                 time.sleep(0.006)
         self._placeholder.markdown("\n\n".join(visiveis))
         self.h[:] = [("item", x) for x in self._linhas]
+        self._rolar_para_baixo()
 
     def _reg(self, nivel, msg, animar=True):
         # Mantém todo o histórico acumulado no painel (adiciona separador visual a cada novo veículo)
@@ -1130,7 +1158,7 @@ class LogPersistente:
 
 
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
-                  ui, pular_criticos=True, simular=False):
+                  ui, pular_criticos=True, simular=False, stop_flag_path=None):
     # Ordena ANTES de copiar para manter os índices alinhados com o relatório
     df = df.assign(
         _dt_ord=pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
@@ -1208,6 +1236,11 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         placas_mapeadas_zuq = {}
 
         for idx, row in df.iterrows():
+            if stop_flag_path and os.path.exists(stop_flag_path):
+                log_container.warning("🛑 Execução interrompida pelo utilizador! Salvando progresso parcial...")
+                st.session_state["resultado"] = {"df": df_relatorio.copy(), "tempo": time.time() - t0,
+                                                 "parcial": True, "simulacao": simular}
+                break
             t_ini = time.time()
             feitos = idx
             if feitos > 0:
@@ -1254,6 +1287,9 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 obs = f"{obs} (Placa corrigida: {placa_orig_pdf} -> {ultima_placa_filtrada})"
                 placa_str = ultima_placa_filtrada
                 df_relatorio.at[idx, 'placa'] = placa_str
+                if st.session_state.get("dados_df") is not None and "placa" in st.session_state["dados_df"].columns:
+                    mask_p = st.session_state["dados_df"]["placa"].astype(str).str.upper().str.replace("-", "", regex=False) == placa_orig_pdf
+                    st.session_state["dados_df"].loc[mask_p, "placa"] = ultima_placa_filtrada
 
             if acao == "OK":
                 registrar(idx, 'Já correto', obs, 'ok', t_ini)
@@ -1483,6 +1519,13 @@ def mostrar_resultado():
     st.divider()
     st.markdown("### 📋 Relatório de Conciliação")
 
+    if "observacao" in df_res.columns and "placa" in df_res.columns:
+        nao_enc = df_res[df_res["observacao"].astype(str).str.contains("Placa não encontrada", na=False)]
+        if not nao_enc.empty:
+            contagem_ne = nao_enc["placa"].value_counts()
+            resumo_placas = ", ".join(f"**{p}** ({qtd}x)" for p, qtd in contagem_ne.items())
+            st.warning(f"🚨 **Placas ausentes no cadastro do ZUQ ({len(contagem_ne)} veículo(s) / {len(nao_enc)} registo(s)):** {resumo_placas}")
+
     ok_mask = df_res['status_lancamento'].isin(STATUS_SUCESSO)
     sucesso = int(ok_mask.sum())
     total = int((df_res['status_lancamento'] != 'Pendente').sum())
@@ -1666,29 +1709,58 @@ if verificar_senha():
 
         simular = st.checkbox("🧪 Modo simulação (analisa e mostra o que faria, sem salvar nada no ZUQ)", value=True)
 
-        btn_iniciar = st.button("🧪 Simular Conciliação no ZUQ" if simular else "🚀 Iniciar Conciliação e Correção no ZUQ", **STRETCH)
+        import tempfile
+        stop_flag_path = os.path.join(tempfile.gettempdir(), "zuq_auto_stop.flag")
+
+        col_b1, col_b2 = st.columns([3, 1])
+        btn_iniciar = col_b1.button("🧪 Simular Conciliação no ZUQ" if simular else "🚀 Iniciar Conciliação e Correção no ZUQ", **STRETCH)
+        btn_parar = col_b2.button("🛑 Parar", help="Interrompe o lote atual com segurança e salva o progresso parcial", **STRETCH)
+
+        if btn_parar:
+            try:
+                with open(stop_flag_path, "w") as _f:
+                    _f.write("stop")
+                st.warning("⏳ Sinal de parada enviado! Aguardar conclusão do item atual...")
+            except Exception:
+                pass
 
         _res = st.session_state.get("resultado")
         if _res and not _res.get("parcial") and not btn_iniciar:
             progress_bar = st.progress(1.0, text="Concluído")
         else:
             progress_bar = st.progress(0, text="Aguardando disparo...")
-        log_container = st.container(height=165, border=True)
+        log_container = st.container(height=185, border=True)
+        scroll_placeholder = st.empty()
         if not btn_iniciar and st.session_state.get("log_hist"):
-            log_container.markdown("\n\n".join(msg for _, msg in st.session_state["log_hist"]))
+            log_container.markdown("\n\n".join(msg for _, msg in st.session_state["log_hist"][-40:]))
 
         if btn_iniciar:
+            if os.path.exists(stop_flag_path):
+                try:
+                    os.remove(stop_flag_path)
+                except Exception:
+                    pass
             if df_para_processar is None or df_para_processar.empty:
                 st.error("Faça o upload de um ficheiro PDF/TXT válido antes de iniciar.")
             elif not senha_zuq:
                 st.error("Informe a senha do ZUQ nas configurações acima.")
             else:
                 st.session_state["log_hist"] = []
-                log = LogPersistente(log_container, st.session_state["log_hist"])
+                log = LogPersistente(log_container, st.session_state["log_hist"], scroll_placeholder=scroll_placeholder)
                 df_resultado, tempo_total = lancar_no_zuq(
                     df_para_processar, url_zuq, usuario_zuq, senha_zuq,
-                    fornecedor_zuq, log, progress_bar, ui, pular_criticos, simular
+                    fornecedor_zuq, log, progress_bar, ui, pular_criticos, simular,
+                    stop_flag_path=stop_flag_path
                 )
-                st.session_state["resultado"] = {"df": df_resultado, "tempo": tempo_total, "simulacao": simular}
+                interrompido = os.path.exists(stop_flag_path)
+                if interrompido:
+                    try:
+                        os.remove(stop_flag_path)
+                    except Exception:
+                        pass
+                st.session_state["resultado"] = {
+                    "df": df_resultado, "tempo": tempo_total,
+                    "simulacao": simular, "parcial": interrompido
+                }
 
     mostrar_resultado()
