@@ -1102,19 +1102,17 @@ class LogPersistente:
         if not self._linhas:
             self._placeholder.empty()
             return
-        anteriores = self._linhas[:-1]
         ultima = self._linhas[-1]
-        prefixo = "\n\n".join(anteriores)
+        visiveis = self._linhas[-35:]
         if animar_ultima and len(ultima) > 4:
-            # Efeito rápido de digitação (~0.10s total) que não afeta o tempo da automação
-            passo = max(4, len(ultima) // 10)
+            ant_v = "\n\n".join(visiveis[:-1])
+            passo = max(5, len(ultima) // 8)
             for k in range(passo, len(ultima) + 1, passo):
                 parcial = ultima[:k] + " ▌"
-                bloco = f"{prefixo}\n\n{parcial}" if prefixo else parcial
+                bloco = f"{ant_v}\n\n{parcial}" if ant_v else parcial
                 self._placeholder.markdown(bloco)
-                time.sleep(0.008)
-        bloco_final = f"{prefixo}\n\n{ultima}" if prefixo else ultima
-        self._placeholder.markdown(bloco_final)
+                time.sleep(0.006)
+        self._placeholder.markdown("\n\n".join(visiveis))
         self.h[:] = [("item", x) for x in self._linhas]
 
     def _reg(self, nivel, msg, animar=True):
@@ -1206,6 +1204,8 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
         ultima_placa_filtrada = ""
+        placas_inexistentes_zuq = set()
+        placas_mapeadas_zuq = {}
 
         for idx, row in df.iterrows():
             t_ini = time.time()
@@ -1233,12 +1233,25 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 registrar(idx, 'Ignorado', f"Auditoria: {row['alertas_auditoria']}", 'erros', t_ini)
                 continue
 
+            if placa_str in placas_inexistentes_zuq:
+                log_container.warning(f"⏭️ Placa {placa_str} já verificada como inexistente no ZUQ — pulando consulta repetida.")
+                registrar(idx, 'Ignorado', 'Placa não encontrada no ZUQ (cache)', 'erros', t_ini)
+                continue
+
+            placa_orig_pdf = placa_str
+            if placa_str in placas_mapeadas_zuq:
+                placa_str = placas_mapeadas_zuq[placa_str]
+                df_relatorio.at[idx, 'placa'] = placa_str
+
             acao, obs, ultima_placa_filtrada = conciliar_ou_criar_registro(
                 driver, wait, base_url, placa_str, data_str, km_str, litros_str, preco_str,
                 ultima_placa_filtrada, log_container, simular
             )
-            if ultima_placa_filtrada and ultima_placa_filtrada != placa_str:
-                obs = f"{obs} (Placa corrigida: {placa_str} -> {ultima_placa_filtrada})"
+            if acao == "NAO_ENCONTRADA":
+                placas_inexistentes_zuq.add(placa_orig_pdf)
+            elif ultima_placa_filtrada and ultima_placa_filtrada != placa_orig_pdf:
+                placas_mapeadas_zuq[placa_orig_pdf] = ultima_placa_filtrada
+                obs = f"{obs} (Placa corrigida: {placa_orig_pdf} -> {ultima_placa_filtrada})"
                 placa_str = ultima_placa_filtrada
                 df_relatorio.at[idx, 'placa'] = placa_str
 
