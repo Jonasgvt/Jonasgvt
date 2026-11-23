@@ -310,14 +310,44 @@ def data_no_texto(texto, data_str):
 # ---------------------------------------------------------
 # PARSER LIVEPOSTO
 # ---------------------------------------------------------
-def extrair_dados_txt_ou_pdf(uploaded_file):
+def extrair_dados_multiplos_arquivos(uploaded_files):
+    if not uploaded_files:
+        return pd.DataFrame()
+    if not isinstance(uploaded_files, list):
+        uploaded_files = [uploaded_files]
+
+    frames = []
+    postos_detectados = []
+    for up_f in uploaded_files:
+        df_item, posto_item = _extrair_unico_arquivo(up_f)
+        if posto_item and posto_item not in postos_detectados:
+            postos_detectados.append(posto_item)
+        if df_item is not None and not df_item.empty:
+            frames.append(df_item)
+
+    if postos_detectados:
+        st.session_state["posto_detectado_pdf"] = " | ".join(postos_detectados)
+
+    if not frames:
+        return pd.DataFrame()
+
+    df_unificado = pd.concat(frames, ignore_index=True)
+    df_unificado = df_unificado.assign(
+        _dt_ord=pd.to_datetime(df_unificado['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
+        _hr_ord=df_unificado['hora'].astype(str).str.strip()
+    ).sort_values(by=["_dt_ord", "_hr_ord", "placa"], kind="stable").drop(columns=["_dt_ord", "_hr_ord"]).reset_index(drop=True)
+    return auditar_e_validar_dados(df_unificado)
+
+
+def _extrair_unico_arquivo(uploaded_file):
     registos = []
     lines = []
+    nome_orig = getattr(uploaded_file, "name", "arquivo")
 
     try:
         uploaded_file.seek(0)
         file_bytes = uploaded_file.read()
-        nome_arquivo = uploaded_file.name.lower()
+        nome_arquivo = nome_orig.lower()
 
         if nome_arquivo.endswith('.pdf'):
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -328,11 +358,11 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
         else:
             lines = file_bytes.decode('latin1', errors='ignore').split('\n')
     except Exception as e:
-        st.error(f"❌ Erro ao ler o arquivo: {e}")
-        return pd.DataFrame()
+        st.error(f"❌ Erro ao ler o arquivo {nome_orig}: {e}")
+        return pd.DataFrame(), ""
 
     if not lines:
-        return pd.DataFrame()
+        return pd.DataFrame(), ""
 
     combustiveis_validos = ("DIESEL", "GASOLINA", "ETANOL", "ALCOOL", "ÁLCOOL")
     re_placa = r'([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})'
@@ -418,7 +448,7 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
                         'data': dt_str, 'hora': hora, 'cupom': cupom, 'placa': placa,
                         'produto': produto_nome, 'quantidade': quantidade,
                         'valor_unitario': vlr_unit, 'valor_total': valor_total, 'km': km,
-                        'linha_bruta': line,
+                        'linha_bruta': line, 'arquivo_origem': nome_orig,
                     })
                     break
                 j += 1
@@ -430,16 +460,8 @@ def extrair_dados_txt_ou_pdf(uploaded_file):
         if m_emp and "GROWTH" not in m_emp.group(1).upper():
             posto_detectado = m_emp.group(1).strip()
             break
-    if posto_detectado:
-        st.session_state["posto_detectado_pdf"] = posto_detectado
 
-    df_ext = pd.DataFrame(registos)
-    if not df_ext.empty:
-        df_ext = df_ext.assign(
-            _dt_ord=pd.to_datetime(df_ext['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
-            _hr_ord=df_ext['hora'].astype(str).str.strip()
-        ).sort_values(by=["_dt_ord", "_hr_ord", "placa"], kind="stable").drop(columns=["_dt_ord", "_hr_ord"]).reset_index(drop=True)
-    return auditar_e_validar_dados(df_ext)
+    return pd.DataFrame(registos), posto_detectado
 
 
 # ---------------------------------------------------------
@@ -553,6 +575,61 @@ def calcular_metricas_pre(df):
 
 def fmt_brl(v):
     return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def gerar_resumo_executivo_frota(df):
+    """Consolida totais por Placa (incluindo KM rodado e média km/L) e por Combustível."""
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    tmp = df.copy()
+    tmp["_litros"] = tmp["quantidade"].map(limpa_numero)
+    tmp["_preco"] = tmp["valor_unitario"].map(limpa_numero)
+    tmp["_valor"] = tmp["_litros"] * tmp["_preco"]
+    tmp["_km"] = tmp["km"].map(limpa_numero)
+    tmp["_dt"] = pd.to_datetime(tmp["data"].astype(str).str.strip(), format="%d/%m/%Y", errors="coerce")
+
+    linhas_placa = []
+    for placa, grp in tmp.groupby("placa", sort=True):
+        grp_ord = grp.sort_values(["_dt", "hora"])
+        kms_validos = grp_ord.loc[grp_ord["_km"] > 0, "_km"]
+        km_ini = float(kms_validos.iloc[0]) if len(kms_validos) >= 1 else 0.0
+        km_fim = float(kms_validos.iloc[-1]) if len(kms_validos) >= 1 else 0.0
+        km_rodado = max(0.0, km_fim - km_ini) if len(kms_validos) >= 2 else 0.0
+        litros_tot = float(grp["_litros"].sum())
+        valor_tot = float(grp["_valor"].sum())
+        # Consumo estimado: km rodado / litros após o 1º abastecimento com KM
+        litros_pos_ini = float(grp_ord.iloc[1:]["_litros"].sum()) if len(grp_ord) >= 2 else 0.0
+        kml = (km_rodado / litros_pos_ini) if (km_rodado > 0 and litros_pos_ini > 0) else 0.0
+
+        linhas_placa.append({
+            "Placa": placa,
+            "Abastecimentos": int(len(grp)),
+            "Litros Totais": round(litros_tot, 2),
+            "Valor Total (R$)": round(valor_tot, 2),
+            "Preço Médio (R$/L)": round(valor_tot / litros_tot, 3) if litros_tot > 0 else 0.0,
+            "KM Inicial": int(km_ini) if km_ini > 0 else None,
+            "KM Final": int(km_fim) if km_fim > 0 else None,
+            "KM Rodado": int(km_rodado) if km_rodado > 0 else None,
+            "Média Est. (km/L)": round(kml, 2) if kml > 0 else None,
+        })
+
+    df_placa = pd.DataFrame(linhas_placa).sort_values("Valor Total (R$)", ascending=False).reset_index(drop=True)
+
+    linhas_comb = []
+    if "produto" in tmp.columns:
+        for prod, grp in tmp.groupby("produto", sort=True):
+            l_tot = float(grp["_litros"].sum())
+            v_tot = float(grp["_valor"].sum())
+            linhas_comb.append({
+                "Combustível": prod or "NÃO INFORMADO",
+                "Abastecimentos": int(len(grp)),
+                "Litros Totais": round(l_tot, 2),
+                "Valor Total (R$)": round(v_tot, 2),
+                "Preço Médio (R$/L)": round(v_tot / l_tot, 3) if l_tot > 0 else 0.0,
+            })
+    df_comb = pd.DataFrame(linhas_comb).sort_values("Litros Totais", ascending=False).reset_index(drop=True) if linhas_comb else pd.DataFrame()
+    return df_placa, df_comb
+
 
 
 # ---------------------------------------------------------
@@ -670,181 +747,44 @@ def _limpar_campo_km_angular(driver):
 
 
 
-def corrigir_conflito_hodometro_zuq(driver, wait, base_url, placa, data_str, km_alvo_str, log_container):
-    """
-    Vai até /secure/manager/maintenance/#/odometer, filtra a placa e clica em
-    'Invalidar medidores' (ng-click="voidMeters(e)") na leitura conflitante para destravar o KM.
-    """
-    km_alvo = int(re.sub(r'\D', '', str(km_alvo_str)) or 0)
-    if km_alvo <= 0:
-        return False
-
-    try:
-        log_container.info(f"🧭 Acessando aba Hodômetro para invalidar leitura conflitante de {placa} (KM alvo: {km_alvo})...")
-        navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=12, log_container=log_container)
-        time.sleep(1.5)
-
-        # Filtra a placa usando o botão de veículos (#btn-allvehicles)
-        wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
-        time.sleep(0.8)
-
-        select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
-        if select_filtro:
-            Select(select_filtro[0]).select_by_visible_text("Placa")
-            time.sleep(0.3)
-
-        input_modal = driver.find_element(By.XPATH, "//div[contains(@class,'selectize-input')]//input")
-        input_modal.click()
-        time.sleep(0.3)
-
-        for item in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//div[contains(@class,'item')]"):
-            try:
-                item.find_element(By.XPATH, ".//a[contains(@class,'remove')]").click()
-                time.sleep(0.15)
-            except Exception:
-                pass
-
-        input_modal.send_keys(Keys.CONTROL + "a")
-        input_modal.send_keys(Keys.BACKSPACE)
+def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=3.5):
+    """Espera dinamicamente até sair da URL /new ou surgir alerta/erro na tela."""
+    limite = time.time() + timeout
+    while time.time() < limite:
+        if sair_do_novo and "/fuel/new" not in driver.current_url:
+            return
+        if not sair_do_novo and "/edit" not in driver.current_url:
+            return
+        if erros_visiveis(driver):
+            return
+        erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
+        if any(el.is_displayed() for el in erros_km):
+            return
         time.sleep(0.2)
-        digitar_devagar(input_modal, placa, atraso=0.015)
-
-        xp_opc = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]"
-        try:
-            WebDriverWait(driver, 2.5).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
-        except TimeoutException:
-            pass
-        opcoes = driver.find_elements(By.XPATH, xp_opc)
-        if not opcoes:
-            try:
-                driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
-            except Exception:
-                pass
-            return False
-
-        opcoes[0].click()
-        time.sleep(0.3)
-        try:
-            driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
-        except Exception:
-            input_modal.send_keys(Keys.ESCAPE)
-        time.sleep(0.4)
-
-        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))).click()
-        time.sleep(1.5)
-        fechar_alerta_se_existir(driver, log_container)
-
-        # Data curta no formato exibido na tabela de Odômetros: dd/mm/aa (ex: 04/11/26)
-        partes_dt = str(data_str).strip().split('/')
-        data_curta = f"{partes_dt[0]}/{partes_dt[1]}/{partes_dt[2][-2:]}" if len(partes_dt) == 3 else str(data_str)
-
-        linhas = driver.find_elements(By.XPATH, "//table//tbody//tr")
-        linha_alvo = None
-
-        # 1º Prioridade: linha marcada com alerta de inconsistência (⚠️)
-        for tr in linhas:
-            has_warn = len(tr.find_elements(By.XPATH, ".//*[contains(@class,'fa-exclamation') or contains(@class,'warning')]")) > 0
-            if has_warn:
-                linha_alvo = tr
-                break
-
-        # 2º Prioridade: linha da mesma data com leitura conflitante
-        if linha_alvo is None:
-            for tr in linhas:
-                txt = tr.text or ""
-                if data_curta in txt or data_str in txt:
-                    linha_alvo = tr
-                    break
-
-        # 3º Prioridade: linha mais recente com hodômetro maior que o KM alvo (causando conflito de regressão)
-        if linha_alvo is None:
-            for tr in linhas:
-                m_km_tr = re.search(r'([\d\.]+)\s*km', tr.text or "", flags=re.IGNORECASE)
-                if m_km_tr:
-                    km_tr = int(re.sub(r'\D', '', m_km_tr.group(1)) or 0)
-                    if km_tr > km_alvo:
-                        linha_alvo = tr
-                        break
-
-        if linha_alvo is None:
-            log_container.warning(f"⚠️ Nenhuma leitura conflitante localizada na aba Hodômetro para {placa}.")
-            return False
-
-        # Clica no botão dropdown (`button.dropdown-toggle` com `i.fa.fa-bars`) da linha
-        btn_menu = linha_alvo.find_element(By.XPATH, ".//button[contains(@class,'dropdown-toggle')] | .//button[.//i[contains(@class,'fa-bars')]]")
-        btn_menu.click()
-        time.sleep(0.5)
-
-        # Clica em `<a ng-click="voidMeters(e)">Invalidar medidores</a>` dentro do dropdown aberto
-        opcoes_void = linha_alvo.find_elements(
-            By.XPATH,
-            ".//ul[contains(@class,'dropdown-menu')]//a[contains(@ng-click,'voidMeters') or contains(.,'Invalidar medidores')]"
-        )
-        if not opcoes_void:
-            opcoes_void = driver.find_elements(
-                By.XPATH,
-                "//ul[contains(@class,'dropdown-menu')]//a[contains(@ng-click,'voidMeters') or contains(.,'Invalidar medidores')]"
-            )
-
-        clicou_void = False
-        for op_v in opcoes_void:
-            if op_v.is_displayed():
-                op_v.click()
-                clicou_void = True
-                time.sleep(1.0)
-                break
-
-        if not clicou_void:
-            log_container.warning("⚠️ Opção 'Invalidar medidores' não disponível nesta linha.")
-            return False
-
-        # Trata o modal de confirmação ("Confirma? Você tem certeza de que deseja marcar o odômetro/horímetro como inválido?")
-        fechar_alerta_se_existir(driver, log_container)
-        xp_conf = "//div[contains(@class,'modal') and contains(@style,'display: block') or contains(@class,'in')]//button[normalize-space()='Confirmar' or contains(.,'Confirmar')]"
-        try:
-            btn_conf = WebDriverWait(driver, 3.0).until(EC.element_to_be_clickable((By.XPATH, xp_conf)))
-            btn_conf.click()
-            time.sleep(1.2)
-        except TimeoutException:
-            for b in driver.find_elements(By.XPATH, "//button[normalize-space()='Confirmar']"):
-                if b.is_displayed():
-                    b.click()
-                    time.sleep(1.2)
-                    break
-
-        log_container.success(f"✅ Medidor conflitante invalidado na aba Hodômetro para {placa}! Reaplicando KM {km_alvo}...")
-        return True
-    except Exception as e_odo:
-        log_container.warning(f"⚠️ Não foi possível invalidar na aba Hodômetro: {e_odo}")
-        return False
 
 
 def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False,
                       base_url="", placa="", data_str="", km_str=""):
-    """Clica em Salvar e confirma o resultado. Retorna (ok, nota)."""
+    """Clica em Salvar e confirma o resultado com espera dinâmica. Retorna (ok, nota)."""
     for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
         try:
             btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
             btn.click()
-            time.sleep(1.3)
+            _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=3.0)
 
             sem_km = False
-            nota_odo = ""
             erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
             if any(el.is_displayed() for el in erros_km):
                 log_container.warning("⚠️ Conflito de Odômetro no ZUQ! Salvando direto sem KM para não travar o lote...")
                 _limpar_campo_km_angular(driver)
-                time.sleep(0.4)
+                time.sleep(0.25)
                 btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
                 btn.click()
-                time.sleep(1.3)
+                _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=3.0)
                 sem_km = True
 
             # Confirmação do salvamento
             if exigir_sair_do_novo:
-                limite = time.time() + 4
-                while "/fuel/new" in driver.current_url and time.time() < limite:
-                    time.sleep(0.4)
                 if "/fuel/new" in driver.current_url:
                     erros = erros_visiveis(driver)
                     detalhe = f": {' | '.join(erros)[:220]}" if erros else " (permaneceu na tela de novo registro)"
@@ -854,7 +794,7 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False,
                 if erros:
                     return False, f"Rejeitado pelo ZUQ: {' | '.join(erros)[:220]}"
 
-            return True, ("Salvo sem KM (conflito de odômetro)" if sem_km else nota_odo)
+            return True, ("Salvo sem KM (conflito de odômetro)" if sem_km else "")
         except Exception:
             continue
     return False, "Botão Salvar não encontrado"
@@ -1003,21 +943,34 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
             log_container.info("✅ Registro no ZUQ já está 100% correto.")
             return "OK", "Já cadastrado (sem divergência)", placa
 
+        # Extrai valores atuais da linha no ZUQ para exibir comparativo "Antes -> Depois"
+        zuq_km_atual = ""
+        zuq_vals_dec = []
+        for t_cel in tds_texto:
+            if re.search(r'\bkm\b', t_cel, flags=re.IGNORECASE) or (t_cel.replace('.', '').isdigit() and len(t_cel.replace('.', '')) >= 4):
+                zuq_km_atual = re.sub(r'\D', '', t_cel)
+            if ',' in t_cel or '.' in t_cel:
+                v_cel = limpa_numero(t_cel)
+                if v_cel > 0:
+                    zuq_vals_dec.append(v_cel)
+
         divergencias = []
         if target_km and not k_ok:
-            divergencias.append("KM")
+            divergencias.append(f"KM: {zuq_km_atual or 'vazio'} → {target_km}")
         if target_preco > 0 and not p_ok:
-            divergencias.append("preço")
+            p_ant = next((v for v in zuq_vals_dec if PRECO_MIN <= v <= PRECO_MAX), None)
+            divergencias.append(f"Preço: {f'R$ {p_ant:.3f}'.replace('.', ',') if p_ant else 'divergente'} → R$ {preco}")
         if target_litros > 0 and not l_ok:
-            divergencias.append("litros")
+            divergencias.append(f"Litros: → {litros}L")
         if tem_zerado:
             divergencias.append("campo zerado")
 
+        detalhe_div = " | ".join(divergencias)
         if simular:
-            log_container.warning(f"🧪 [SIMULAÇÃO] {placa} seria atualizado ({', '.join(divergencias)}).")
-            return "SIM_ATUALIZAR", f"Simulação: atualizaria ({', '.join(divergencias)})", placa
+            log_container.warning(f"🧪 [SIMULAÇÃO] {placa} seria atualizado ({detalhe_div}).")
+            return "SIM_ATUALIZAR", f"Simulação: atualizaria ({detalhe_div})", placa
 
-        log_container.warning(f"✏️ Divergência detectada na placa {placa}. Editando no ZUQ...")
+        log_container.warning(f"✏️ Divergência em {placa} ({detalhe_div}). Editando no ZUQ...")
         try:
             link = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
             navegar_com_timeout_seguro(driver, link.get_attribute("href"), timeout=12, log_container=log_container)
@@ -1056,9 +1009,9 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
             base_url=base_url, placa=placa, data_str=data, km_str=km
         )
         if ok_save:
-            log_container.success(f"✅ Preço/Litros/KM atualizados no ZUQ para {placa}!")
+            log_container.success(f"✅ Atualizado no ZUQ ({placa}): {detalhe_div}")
             # Saímos da lista: força novo filtro no próximo registro
-            return "ATUALIZADO", "Preço e dados corrigidos no ZUQ" + (f" — {nota}" if nota else ""), ""
+            return "ATUALIZADO", f"Corrigido ({detalhe_div})" + (f" — {nota}" if nota else ""), ""
         return "ERRO", f"Falha ao salvar edição: {nota}", ""
 
     except Exception as e:
@@ -1542,11 +1495,23 @@ def mostrar_resultado():
             st.session_state["log_hist"] = []
             st.rerun()
 
-    st.dataframe(
-        df_visivel[['placa', 'data', 'quantidade', 'valor_unitario', 'km',
-                    'status_lancamento', 'observacao', 'segundos']],
-        **STRETCH
-    )
+    df_resumo_placa, df_resumo_comb = gerar_resumo_executivo_frota(df_res)
+
+    tab_det, tab_placas, tab_comb = st.tabs([
+        f"📄 Detalhado ({len(df_visivel)})",
+        f"🚛 Resumo por Placa & km/L ({len(df_resumo_placa)})",
+        f"⛽ Por Combustível ({len(df_resumo_comb)})"
+    ])
+    with tab_det:
+        cols_det = [c for c in ['placa', 'data', 'quantidade', 'valor_unitario', 'km',
+                                'status_lancamento', 'observacao', 'arquivo_origem', 'segundos'] if c in df_visivel.columns]
+        st.dataframe(df_visivel[cols_det], **STRETCH)
+    with tab_placas:
+        if not df_resumo_placa.empty:
+            st.dataframe(df_resumo_placa, **STRETCH)
+    with tab_comb:
+        if not df_resumo_comb.empty:
+            st.dataframe(df_resumo_comb, **STRETCH)
 
     col_dl1, col_dl2 = st.columns(2)
     csv_data = df_res.to_csv(index=False, sep=';', encoding='utf-8-sig')
@@ -1562,11 +1527,15 @@ def mostrar_resultado():
         buf_xlsx = io.BytesIO()
         cols_export = [c for c in ['placa', 'data', 'hora', 'cupom', 'produto', 'quantidade',
                                    'valor_unitario', 'valor_total', 'km', 'status_lancamento',
-                                   'observacao', 'data_processamento', 'segundos'] if c in df_res.columns]
+                                   'observacao', 'arquivo_origem', 'data_processamento', 'segundos'] if c in df_res.columns]
         with pd.ExcelWriter(buf_xlsx) as writer:
             df_res[cols_export].to_excel(writer, index=False, sheet_name="Conciliacao_ZUQ")
+            if not df_resumo_placa.empty:
+                df_resumo_placa.to_excel(writer, index=False, sheet_name="Resumo_Por_Placa")
+            if not df_resumo_comb.empty:
+                df_resumo_comb.to_excel(writer, index=False, sheet_name="Resumo_Combustivel")
         col_dl2.download_button(
-            label="📊 Baixar Relatório (Excel .xlsx)",
+            label="📊 Baixar Relatório Completo (Excel 3 Abas)",
             data=buf_xlsx.getvalue(),
             file_name=f"{prefixo}_conciliacao_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1601,15 +1570,20 @@ if verificar_senha():
     col_upload, col_control = st.columns([1.1, 1], gap="large")
 
     with col_upload:
-        st.markdown("### 📁 1. Ficheiro Liveposto")
-        uploaded_file = st.file_uploader("Upload de relatório em PDF ou TXT", type=["pdf", "txt"], label_visibility="collapsed")
+        st.markdown("### 📁 1. Ficheiros Liveposto (1 ou vários)")
+        uploaded_files = st.file_uploader(
+            "Upload de um ou mais relatórios em PDF ou TXT",
+            type=["pdf", "txt"],
+            accept_multiple_files=True,
+            label_visibility="collapsed"
+        )
 
-        if uploaded_file is not None:
-            file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+        if uploaded_files:
+            file_id = "|".join(sorted(f"{f.name}_{f.size}" for f in uploaded_files))
             if st.session_state.get("ultimo_arquivo_id") != file_id:
-                st.session_state["dados_df"] = extrair_dados_txt_ou_pdf(uploaded_file)
+                st.session_state["dados_df"] = extrair_dados_multiplos_arquivos(uploaded_files)
                 st.session_state["ultimo_arquivo_id"] = file_id
-                st.session_state["resultado"] = None  # novo arquivo, limpa relatório antigo
+                st.session_state["resultado"] = None  # novo lote, limpa relatório antigo
                 st.session_state["kpis"] = None
                 st.session_state["log_hist"] = []
         else:
