@@ -1092,37 +1092,36 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 # AUTOMAÇÃO DE LANÇAMENTO E EDIÇÃO ZUQ
 # ---------------------------------------------------------
 class LogPersistente:
-    """Exibe apenas o registro atual em execução, apagando o anterior com transição digitando."""
+    """Mantém o histórico completo no painel com efeito de digitação na linha nova (sem atrasar a automação)."""
     def __init__(self, container, historico):
         self.c, self.h = container, historico
         self._placeholder = container.empty()
-        self._atual = []
+        self._linhas = []
 
     def _render(self, animar_ultima=False):
-        if not self._atual:
+        if not self._linhas:
             self._placeholder.empty()
             return
-        anteriores = self._atual[:-1]
-        ultima = self._atual[-1]
+        anteriores = self._linhas[:-1]
+        ultima = self._linhas[-1]
         prefixo = "\n\n".join(anteriores)
         if animar_ultima and len(ultima) > 4:
-            # Efeito rápido de digitação (~0.18s total) sem atrasar o robô
-            passo = max(2, len(ultima) // 14)
+            # Efeito rápido de digitação (~0.10s total) que não afeta o tempo da automação
+            passo = max(4, len(ultima) // 10)
             for k in range(passo, len(ultima) + 1, passo):
                 parcial = ultima[:k] + " ▌"
                 bloco = f"{prefixo}\n\n{parcial}" if prefixo else parcial
                 self._placeholder.markdown(bloco)
-                time.sleep(0.012)
+                time.sleep(0.008)
         bloco_final = f"{prefixo}\n\n{ultima}" if prefixo else ultima
         self._placeholder.markdown(bloco_final)
-        self.h[:] = [("item", x) for x in self._atual]
+        self.h[:] = [("item", x) for x in self._linhas]
 
     def _reg(self, nivel, msg, animar=True):
-        # Quando inicia um novo veículo (📌), apaga o anterior e limpa o painel
-        if msg.startswith("📌") or msg.startswith("🎉"):
-            self._atual = [msg]
-        else:
-            self._atual.append(msg)
+        # Mantém todo o histórico acumulado no painel (adiciona separador visual a cada novo veículo)
+        if msg.startswith("📌") and self._linhas:
+            self._linhas.append("---")
+        self._linhas.append(msg)
         self._render(animar_ultima=animar)
 
     def info(self, m): self._reg("info", m, animar=True)
@@ -1474,7 +1473,7 @@ def mostrar_resultado():
     ok_mask = df_res['status_lancamento'].isin(STATUS_SUCESSO)
     sucesso = int(ok_mask.sum())
     total = int((df_res['status_lancamento'] != 'Pendente').sum())
-    litros = df_res.loc[ok_mask, 'quantidade'].map(limpa_numero).sum()
+    litros = float(df_res.loc[ok_mask, 'quantidade'].map(limpa_numero).sum() or 0.0) if ok_mask.any() else 0.0
     media = df_res.loc[df_res['segundos'] > 0, 'segundos'].mean()
 
     m1, m2, m3, m4 = st.columns(4)
