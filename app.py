@@ -832,36 +832,13 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False,
             nota_odo = ""
             erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
             if any(el.is_displayed() for el in erros_km):
-                log_container.warning("⚠️ Conflito de Odômetro no ZUQ! Tentando corrigir na aba Hodômetro...")
-                corrigiu_odo = False
-                if base_url and placa and km_str:
-                    url_antes = driver.current_url
-                    corrigiu_odo = corrigir_conflito_hodometro_zuq(
-                        driver, wait, base_url, placa, data_str, km_str, log_container
-                    )
-                    if corrigiu_odo:
-                        # Retorna ao formulário do abastecimento e reaplica o KM corrigido
-                        navegar_com_timeout_seguro(driver, url_antes, timeout=12, log_container=log_container)
-                        time.sleep(1.4)
-                        try:
-                            preencher_campo_angular(driver, driver.find_element(By.XPATH, XP_KM), km_str)
-                        except Exception:
-                            pass
-                        btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                        btn.click()
-                        time.sleep(1.3)
-                        nota_odo = f"Hodômetro ajustado para {km_str} km"
-
-                # Se ainda persistir o conflito após tentar ajustar na aba Hodômetro, salva sem KM como fallback seguro
-                erros_km_pos = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
-                if not corrigiu_odo or any(el.is_displayed() for el in erros_km_pos):
-                    log_container.warning("⚠️ Mantendo fallback: salvando sem KM para não travar o lote...")
-                    _limpar_campo_km_angular(driver)
-                    time.sleep(0.4)
-                    btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                    btn.click()
-                    time.sleep(1.3)
-                    sem_km = True
+                log_container.warning("⚠️ Conflito de Odômetro no ZUQ! Salvando direto sem KM para não travar o lote...")
+                _limpar_campo_km_angular(driver)
+                time.sleep(0.4)
+                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                btn.click()
+                time.sleep(1.3)
+                sem_km = True
 
             # Confirmação do salvamento
             if exigir_sair_do_novo:
