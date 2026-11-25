@@ -1101,11 +1101,60 @@ def _parse_data_hora_zuq(texto_dt):
     return None
 
 
-def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress_bar):
+def _ler_todas_leituras_odometro_zuq(driver, wait, log_container):
+    """Percorre todas as páginas da tabela na aba Hodômetro (#/odometer) para garantir 100% do histórico."""
+    leituras = []
+    vistas = set()
+    pagina = 1
+    while True:
+        novas_na_pag = 0
+        for tr in driver.find_elements(By.XPATH, "//table//tbody//tr"):
+            tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
+            if len(tds) < 4:
+                continue
+            origem_txt = f"{tds[0]} {tds[1]}".strip()
+            km_tr = 0
+            dt_obj = None
+            dt_raw = ""
+            for cel in tds:
+                m_km_cel = re.search(r'([\d\.]+)\s*km', cel, flags=re.IGNORECASE)
+                if m_km_cel:
+                    km_tr = int(re.sub(r'\D', '', m_km_cel.group(1)) or 0)
+                m_dt_cel = re.search(r'(\d{2}/\d{2}/\d{2,4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)', cel)
+                if m_dt_cel:
+                    dt_raw = m_dt_cel.group(1)
+                    dt_obj = _parse_data_hora_zuq(dt_raw)
+            if km_tr > 0 and dt_obj is not None:
+                chave = (dt_raw, km_tr, origem_txt)
+                if chave not in vistas:
+                    vistas.add(chave)
+                    leituras.append((dt_obj, dt_raw, km_tr, origem_txt))
+                    novas_na_pag += 1
+
+        # Tenta avançar para a próxima página da tabela de Hodômetro se existir botão "Próximo" ativo
+        prox_btns = driver.find_elements(
+            By.XPATH,
+            "//ul[contains(@class,'pagination')]//li[not(contains(@class,'disabled'))]//a[contains(.,'Próxim') or contains(.,'Next') or contains(.,'›') or contains(.,'»')]"
+        )
+        if prox_btns and novas_na_pag > 0 and pagina < 30:
+            try:
+                prox_btns[0].click()
+                time.sleep(0.9)
+                pagina += 1
+                continue
+            except Exception:
+                break
+        break
+
+    leituras.sort(key=lambda x: x[0])
+    return leituras
+
+
+def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress_bar,
+                            driver_externo=None, wait_externo=None):
     """
-    Consulta a aba Hodômetro (#/odometer) e Abastecimentos (#/fuel) no ZUQ em modo somente leitura
-    ANTES de fazer qualquer entrada, validando cronologicamente (Data + Hora) se cada KM do ficheiro
-    encaixa entre a leitura anterior e a leitura posterior do veículo.
+    Executa a pré-análise 100% cronológica na aba Hodômetro (#/odometer) do ZUQ
+    ANTES de fazer qualquer entrada, percorrendo todas as páginas de histórico de cada placa.
     """
     df_ord = df.assign(
         _dt_ord=pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
@@ -1113,32 +1162,36 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
     ).sort_values(by=["placa", "_dt_ord", "_hr_ord"], kind="stable").drop(columns=["_dt_ord", "_hr_ord"]).reset_index(drop=True)
 
     resultados = []
-    driver = criar_driver()
-    wait = WebDriverWait(driver, 15)
+    fechar_driver_ao_final = driver_externo is None
+    driver = driver_externo if driver_externo is not None else criar_driver()
+    wait = wait_externo if wait_externo is not None else WebDriverWait(driver, 15)
 
     try:
-        log_container.info("🩺 Conectando ao ZUQ para checkup cronológico de Hodômetro (somente leitura)...")
+        if fechar_driver_ao_final:
+            log_container.info("🩺 Conectando ao ZUQ para pré-análise 100% de Hodômetro...")
 
-        def acao_login():
-            navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
-            campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
-            campo_usuario.clear()
-            digitar_devagar(campo_usuario, USUARIO, atraso=0.04)
-            try:
-                campo_senha = driver.find_element(By.NAME, "password")
-            except NoSuchElementException:
-                campo_senha = driver.find_element(By.XPATH, "//input[@type='password']")
-            campo_senha.clear()
-            digitar_devagar(campo_senha, SENHA, atraso=0.04)
-            time.sleep(0.25)
-            try:
-                driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
-            except NoSuchElementException:
-                campo_senha.send_keys(Keys.ENTER)
+            def acao_login():
+                navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
+                campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
+                campo_usuario.clear()
+                digitar_devagar(campo_usuario, USUARIO, atraso=0.04)
+                try:
+                    campo_senha = driver.find_element(By.NAME, "password")
+                except NoSuchElementException:
+                    campo_senha = driver.find_element(By.XPATH, "//input[@type='password']")
+                campo_senha.clear()
+                digitar_devagar(campo_senha, SENHA, atraso=0.04)
+                time.sleep(0.25)
+                try:
+                    driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
+                except NoSuchElementException:
+                    campo_senha.send_keys(Keys.ENTER)
 
-        executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        log_container.info("🔐 Login efetuado. Lendo histórico cronológico na aba Hodômetro...")
-        time.sleep(2.5)
+            executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
+            log_container.info("🔐 Login efetuado. Iniciando varredura 100% na aba Hodômetro...")
+            time.sleep(2.5)
+        else:
+            log_container.info("🩺 Fase 1/2 — Varredura 100% do histórico na aba Hodômetro antes das entradas...")
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
         navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=12, log_container=log_container)
@@ -1147,12 +1200,14 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
         placas_unicas = list(dict.fromkeys(
             re.sub(r'[^A-Z0-9]', '', str(p).upper()) for p in df_ord['placa'] if str(p).strip()
         ))
-        # placa -> {"existe": bool, "placa_real": str, "leituras": [(dt_obj, dt_str, km_int, origem_txt)]}
         cache_odo_placa = {}
 
         total_p = max(1, len(placas_unicas))
         for idx_p, placa in enumerate(placas_unicas):
-            progress_bar.progress((idx_p + 1) / total_p, text=f"Checkup Hodômetro: placa {idx_p + 1}/{total_p} ({placa})...")
+            progress_bar.progress(
+                (idx_p + 1) / total_p,
+                text=f"[Pré-Análise 100%] Lendo hodômetro {idx_p + 1}/{total_p} ({placa})..."
+            )
             try:
                 wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
                 time.sleep(0.5)
@@ -1224,34 +1279,13 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 time.sleep(1.2)
                 fechar_alerta_se_existir(driver, log_container)
 
-                # Lê tabela da aba Hodômetro: Tipo | Origem da entrada | Veículo | Hodômetro | Horimetro | Data
-                leituras = []
-                for tr in driver.find_elements(By.XPATH, "//table//tbody//tr"):
-                    tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
-                    if len(tds) < 4:
-                        continue
-                    origem_txt = f"{tds[0]} {tds[1]}".strip()
-                    km_tr = 0
-                    dt_obj = None
-                    dt_raw = ""
-                    for cel in tds:
-                        m_km_cel = re.search(r'([\d\.]+)\s*km', cel, flags=re.IGNORECASE)
-                        if m_km_cel:
-                            km_tr = int(re.sub(r'\D', '', m_km_cel.group(1)) or 0)
-                        m_dt_cel = re.search(r'(\d{2}/\d{2}/\d{2,4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)', cel)
-                        if m_dt_cel:
-                            dt_raw = m_dt_cel.group(1)
-                            dt_obj = _parse_data_hora_zuq(dt_raw)
-                    if km_tr > 0 and dt_obj is not None:
-                        leituras.append((dt_obj, dt_raw, km_tr, origem_txt))
-
-                leituras.sort(key=lambda x: x[0])
+                leituras = _ler_todas_leituras_odometro_zuq(driver, wait, log_container)
                 cache_odo_placa[placa] = {
                     "existe": True,
                     "placa_real": placa_real,
                     "leituras": leituras,
                 }
-                log_container.info(f"✅ {placa_real}: {len(leituras)} leitura(s) de hodômetro lidas com data/hora.")
+                log_container.info(f"✅ {placa_real}: {len(leituras)} leitura(s) completas lidas no Hodômetro.")
             except Exception as e_p:
                 try:
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
@@ -1260,12 +1294,12 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 cache_odo_placa[placa] = {"existe": True, "placa_real": placa, "leituras": []}
                 log_container.warning(f"⚠️ Falha ao ler hodômetro de {placa}: {e_p}")
 
-        # Cruza cada abastecimento do ficheiro pela DATA + HORA contra a linha do tempo do Hodômetro
-        ultimo_lote_dt_km = {}  # placa -> (dt_obj, km_int)
+        ultimo_lote_dt_km = {}
         for _, row in df_ord.iterrows():
             placa = re.sub(r'[^A-Z0-9]', '', str(row['placa']).upper())
             data_s = str(row['data']).strip()
             hora_s = str(row.get('hora', '08:00:00')).strip()
+            cupom_s = str(row.get('cupom', '0')).strip()
             litros_f = limpa_numero(row['quantidade'])
             km_arq = int(re.sub(r'\D', '', str(row['km'])) or 0)
             dt_arq = _parse_data_hora_zuq(f"{data_s} {hora_s}") or _parse_data_hora_zuq(data_s)
@@ -1273,6 +1307,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
             info = cache_odo_placa.get(placa, {"existe": False, "placa_real": placa, "leituras": []})
             if not info["existe"]:
                 resultados.append({
+                    "_chave": f"{placa}|{data_s}|{hora_s}|{cupom_s}",
                     "Placa": placa,
                     "Placa ZUQ": "NÃO EXISTE",
                     "Data/Hora": f"{data_s} {hora_s[:5]}",
@@ -1285,10 +1320,9 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 continue
 
             leituras = info["leituras"]
-            # Leitura exata na mesma data (e hora próxima) vs anterior e posterior cronologicamente
             leitura_mesma_data = None
-            anterior = None   # (dt_obj, dt_raw, km_tr)
-            posterior = None  # (dt_obj, dt_raw, km_tr)
+            anterior = None
+            posterior = None
 
             if dt_arq is not None:
                 for dt_l, dt_raw, km_l, orig_l in leituras:
@@ -1299,7 +1333,6 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                     elif dt_l > dt_arq and posterior is None:
                         posterior = (dt_l, dt_raw, km_l)
 
-            # Também considera o item anterior do próprio lote se for cronologicamente mais recente que `anterior`
             if placa in ultimo_lote_dt_km and dt_arq is not None:
                 dt_prev_lote, km_prev_lote = ultimo_lote_dt_km[placa]
                 if dt_prev_lote <= dt_arq and (anterior is None or dt_prev_lote >= anterior[0]):
@@ -1331,6 +1364,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 ultimo_lote_dt_km[placa] = (dt_arq, km_arq)
 
             resultados.append({
+                "_chave": f"{placa}|{data_s}|{hora_s}|{cupom_s}",
                 "Placa": placa,
                 "Placa ZUQ": info["placa_real"],
                 "Data/Hora": f"{data_s} {hora_s[:5]}",
@@ -1341,17 +1375,19 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 "Diagnóstico KM": diag,
             })
 
-        progress_bar.progress(1.0, text="Checkup cronológico de Hodômetro concluído!")
-        log_container.success("🩺 Checkup cronológico de Hodômetro concluído! Nenhum dado foi alterado no ZUQ.")
+        log_container.success("🩺 Pré-análise 100% de Hodômetro concluída!")
     except Exception as e_chk:
-        log_container.error(f"❌ Erro durante o checkup de Hodômetro: {e_chk}")
+        log_container.error(f"❌ Erro durante a pré-análise de Hodômetro: {e_chk}")
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        if fechar_driver_ao_final:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
     return pd.DataFrame(resultados)
+
+
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
                   ui, pular_criticos=True, simular=False, stop_flag_path=None):
     # Ordena ANTES de copiar para manter os índices alinhados com o relatório
@@ -1425,6 +1461,23 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         log_container.info("🔐 Autenticação efetuada com sucesso.")
         time.sleep(3)
 
+        # FASE 1 DIRETA: Pré-análise 100% cronológica de Hodômetro antes de qualquer entrada
+        df_chk_direto = executar_checkup_km_zuq(
+            df, URL_ZUQ, USUARIO, SENHA, log_container, progress_bar,
+            driver_externo=driver, wait_externo=wait
+        )
+        mapa_diag_km = {}
+        if df_chk_direto is not None and not df_chk_direto.empty:
+            st.session_state["checkup_km_df"] = df_chk_direto.drop(columns=["_chave"], errors="ignore")
+            for _, r_chk in df_chk_direto.iterrows():
+                mapa_diag_km[r_chk["_chave"]] = str(r_chk["Diagnóstico KM"])
+            qtd_conflitos = int(df_chk_direto["Diagnóstico KM"].astype(str).str.startswith("❌").sum())
+            if qtd_conflitos > 0:
+                log_container.warning(f"⚠️ Pré-análise detectou {qtd_conflitos} conflito(s) de odômetro na linha do tempo. Iniciando Fase 2 (entradas) com proteção ativa...")
+            else:
+                log_container.info("✅ 100% dos KMs validados na linha do tempo do Hodômetro. Iniciando Fase 2 (entradas)...")
+        df_relatorio['diagnostico_hodometro'] = ''
+
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
         ultima_placa_filtrada = ""
         placas_inexistentes_zuq = set()
@@ -1452,6 +1505,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             data_str = str(row['data']).strip()
             litros_str = str(row['quantidade'])
             preco_str = str(row['valor_unitario'])
+
+            chave_chk = f"{placa_str}|{data_str}|{hora_str}|{cupom_str}"
+            diag_odo = mapa_diag_km.get(chave_chk, "")
+            df_relatorio.at[idx, 'diagnostico_hodometro'] = diag_odo
+            if diag_odo.startswith("❌"):
+                log_container.warning(f"🩺 Pré-análise Hodômetro ({placa_str}): {diag_odo} — KM será omitido na entrada para não gerar erro no ZUQ.")
+                km_str = ""
 
             log_container.write(f"📌 **[{idx + 1}/{total_registros}] Placa {placa_str}** | Data: {data_str} | Vol: {litros_str}L | Preço/L: R$ {preco_str} | KM: {km_str or 'N/A'}")
             fechar_alerta_se_existir(driver, log_container)
@@ -1769,7 +1829,7 @@ def mostrar_resultado():
     ])
     with tab_det:
         cols_det = [c for c in ['placa', 'data', 'quantidade', 'valor_unitario', 'km',
-                                'status_lancamento', 'observacao', 'arquivo_origem', 'segundos'] if c in df_visivel.columns]
+                                'diagnostico_hodometro', 'status_lancamento', 'observacao', 'arquivo_origem', 'segundos'] if c in df_visivel.columns]
         st.dataframe(df_visivel[cols_det], **STRETCH)
     with tab_placas:
         if not df_resumo_placa.empty:
@@ -1791,7 +1851,7 @@ def mostrar_resultado():
     try:
         buf_xlsx = io.BytesIO()
         cols_export = [c for c in ['placa', 'data', 'hora', 'cupom', 'produto', 'quantidade',
-                                   'valor_unitario', 'valor_total', 'km', 'status_lancamento',
+                                   'valor_unitario', 'valor_total', 'km', 'diagnostico_hodometro', 'status_lancamento',
                                    'observacao', 'arquivo_origem', 'data_processamento', 'segundos'] if c in df_res.columns]
         with pd.ExcelWriter(buf_xlsx) as writer:
             df_res[cols_export].to_excel(writer, index=False, sheet_name="Conciliacao_ZUQ")
@@ -1930,13 +1990,13 @@ if verificar_senha():
         stop_flag_path = os.path.join(tempfile.gettempdir(), "zuq_auto_stop.flag")
 
         btn_checkup_km = st.button(
-            "🩺 Fazer Checkup de KM no ZUQ (Antes de Lançar)",
+            "🩺 Rodar Somente Pré-Análise 100% de Hodômetro (Sem Entradas)",
             help="Consulta o ZUQ em modo somente leitura para conferir se os KMs batem antes de fazer qualquer entrada",
             **STRETCH
         )
 
         col_b1, col_b2 = st.columns([3, 1])
-        btn_iniciar = col_b1.button("🧪 Simular Conciliação no ZUQ" if simular else "🚀 Iniciar Conciliação e Correção no ZUQ", **STRETCH)
+        btn_iniciar = col_b1.button("🧪 Simular (Pré-Análise 100% + Conciliação)" if simular else "🚀 Iniciar (Pré-Análise 100% Hodômetro + Entrada Direta)", **STRETCH)
         btn_parar = col_b2.button("🛑 Parar", help="Interrompe o lote atual com segurança e salva o progresso parcial", **STRETCH)
 
         if btn_parar:
