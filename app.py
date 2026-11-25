@@ -1087,6 +1087,244 @@ class LogPersistente:
     def write(self, m): self._reg("write", m, animar=True)
 
 
+
+def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress_bar):
+    """
+    Consulta o ZUQ em modo somente leitura ANTES de fazer qualquer entrada,
+    comparando os KMs do ficheiro Liveposto com o histórico/odómetro existente no ZUQ.
+    """
+    df_ord = df.assign(
+        _dt_ord=pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
+        _hr_ord=df['hora'].astype(str).str.strip()
+    ).sort_values(by=["placa", "_dt_ord", "_hr_ord"], kind="stable").drop(columns=["_dt_ord", "_hr_ord"]).reset_index(drop=True)
+
+    resultados = []
+    driver = criar_driver()
+    wait = WebDriverWait(driver, 15)
+
+    try:
+        log_container.info("🩺 Conectando ao ZUQ para checkup prévio de KM (somente leitura)...")
+
+        def acao_login():
+            navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
+            campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
+            campo_usuario.clear()
+            digitar_devagar(campo_usuario, USUARIO, atraso=0.04)
+            try:
+                campo_senha = driver.find_element(By.NAME, "password")
+            except NoSuchElementException:
+                campo_senha = driver.find_element(By.XPATH, "//input[@type='password']")
+            campo_senha.clear()
+            digitar_devagar(campo_senha, SENHA, atraso=0.04)
+            time.sleep(0.25)
+            try:
+                driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
+            except NoSuchElementException:
+                campo_senha.send_keys(Keys.ENTER)
+
+        executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
+        log_container.info("🔐 Login efetuado. Lendo histórico de KM das placas no ZUQ...")
+        time.sleep(2.5)
+
+        base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
+        navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12, log_container=log_container)
+        time.sleep(1.2)
+
+        placas_unicas = list(dict.fromkeys(
+            re.sub(r'[^A-Z0-9]', '', str(p).upper()) for p in df_ord['placa'] if str(p).strip()
+        ))
+        cache_zuq_placa = {}  # placa -> {"existe": bool, "placa_real": str, "linhas": [(data_txt, km_int, litros_f, preco_f)], "max_km": int}
+
+        total_p = max(1, len(placas_unicas))
+        for idx_p, placa in enumerate(placas_unicas):
+            progress_bar.progress((idx_p + 1) / total_p, text=f"Checkup KM: consultando placa {idx_p + 1}/{total_p} ({placa})...")
+            try:
+                wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
+                time.sleep(0.5)
+
+                select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
+                if select_filtro:
+                    Select(select_filtro[0]).select_by_visible_text("Placa")
+                    time.sleep(0.2)
+
+                input_modal = driver.find_element(By.XPATH, "//div[contains(@class,'selectize-input')]//input")
+                input_modal.click()
+                time.sleep(0.2)
+                for item in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//div[contains(@class,'item')]"):
+                    try:
+                        item.find_element(By.XPATH, ".//a[contains(@class,'remove')]").click()
+                        time.sleep(0.1)
+                    except Exception:
+                        pass
+
+                input_modal.send_keys(Keys.CONTROL + "a")
+                input_modal.send_keys(Keys.BACKSPACE)
+                digitar_devagar(input_modal, placa, atraso=0.015)
+
+                xp_opc = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]"
+                try:
+                    WebDriverWait(driver, 2.0).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
+                except TimeoutException:
+                    pass
+                opcoes = driver.find_elements(By.XPATH, xp_opc)
+                placa_real = placa
+
+                if not opcoes and len(placa) == 7:
+                    sufixo = placa[-4:]
+                    input_modal.send_keys(Keys.CONTROL + "a")
+                    input_modal.send_keys(Keys.BACKSPACE)
+                    digitar_devagar(input_modal, sufixo, atraso=0.015)
+                    xp_suf = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{sufixo}')]"
+                    try:
+                        WebDriverWait(driver, 1.8).until(EC.presence_of_element_located((By.XPATH, xp_suf)))
+                    except TimeoutException:
+                        pass
+                    cands = []
+                    for el_op in driver.find_elements(By.XPATH, xp_suf):
+                        m_p = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', el_op.text.upper().replace('-', ''))
+                        if m_p and len(m_p.group(1)) == 7 and sum(a != b for a, b in zip(placa, m_p.group(1))) == 1:
+                            cands.append((m_p.group(1), el_op))
+                    distintas = {p for p, _ in cands}
+                    if len(distintas) == 1:
+                        placa_real = next(iter(distintas))
+                        opcoes = [el for p, el in cands if p == placa_real]
+
+                if not opcoes:
+                    driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
+                    time.sleep(0.4)
+                    fechar_alerta_se_existir(driver, log_container)
+                    cache_zuq_placa[placa] = {"existe": False, "placa_real": placa, "linhas": [], "max_km": 0}
+                    log_container.warning(f"🚨 Placa {placa} não encontrada no ZUQ.")
+                    continue
+
+                opcoes[0].click()
+                time.sleep(0.25)
+                try:
+                    driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
+                except Exception:
+                    input_modal.send_keys(Keys.ESCAPE)
+                time.sleep(0.25)
+
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))).click()
+                time.sleep(1.2)
+                fechar_alerta_se_existir(driver, log_container)
+
+                linhas_zuq = []
+                max_km = 0
+                for tr in driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]"):
+                    txt_tr = tr.text or ""
+                    tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
+                    km_tr = 0
+                    for cel in tds:
+                        cel_limpa = cel.replace('.', '').replace(',', '').strip()
+                        if re.search(r'\bkm\b', cel, flags=re.IGNORECASE) or (cel_limpa.isdigit() and len(cel_limpa) >= 4 and '/' not in cel and ':' not in cel):
+                            v_k = int(re.sub(r'\D', '', cel) or 0)
+                            if v_k > km_tr:
+                                km_tr = v_k
+                    if km_tr > max_km:
+                        max_km = km_tr
+                    linhas_zuq.append((txt_tr, tds, km_tr))
+
+                cache_zuq_placa[placa] = {
+                    "existe": True,
+                    "placa_real": placa_real,
+                    "linhas": linhas_zuq,
+                    "max_km": max_km,
+                }
+                log_container.info(f"✅ {placa_real}: {len(linhas_zuq)} registro(s) no ZUQ · Maior KM registrado: {max_km or 'N/A'}")
+            except Exception as e_p:
+                try:
+                    driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
+                except Exception:
+                    pass
+                cache_zuq_placa[placa] = {"existe": True, "placa_real": placa, "linhas": [], "max_km": 0}
+                log_container.warning(f"⚠️ Falha ao ler {placa}: {e_p}")
+
+        # Cruza cada linha do arquivo com os dados lidos do ZUQ
+        ultimo_km_lote = {}
+        for _, row in df_ord.iterrows():
+            placa = re.sub(r'[^A-Z0-9]', '', str(row['placa']).upper())
+            data_s = str(row['data']).strip()
+            litros_f = limpa_numero(row['quantidade'])
+            preco_f = limpa_numero(row['valor_unitario'])
+            km_arq = int(re.sub(r'\D', '', str(row['km'])) or 0)
+
+            info = cache_zuq_placa.get(placa, {"existe": False, "placa_real": placa, "linhas": [], "max_km": 0})
+            if not info["existe"]:
+                resultados.append({
+                    "Placa": placa,
+                    "Placa ZUQ": "NÃO EXISTE",
+                    "Data": data_s,
+                    "Litros": litros_f,
+                    "KM Arquivo": km_arq if km_arq > 0 else None,
+                    "KM ZUQ (Data)": None,
+                    "Maior KM ZUQ": None,
+                    "Dif. KM": None,
+                    "Diagnóstico KM": "🚨 Placa ausente no ZUQ",
+                })
+                continue
+
+            # Procura linha da mesma data no ZUQ
+            km_zuq_data = None
+            achou_data = False
+            for txt_tr, tds, km_tr in info["linhas"]:
+                if data_no_texto(txt_tr, data_s):
+                    nums = [limpa_numero(c) for c in tds if limpa_numero(c) > 0]
+                    l_ok = litros_f > 0 and any(abs(n - litros_f) < 0.1 for n in nums)
+                    p_ok = preco_f > 0 and any(abs(n - preco_f) < 0.05 for n in nums)
+                    if l_ok or p_ok or km_zuq_data is None:
+                        achou_data = True
+                        km_zuq_data = km_tr if km_tr > 0 else 0
+
+            maior_km_zuq = info["max_km"]
+            km_ant_lote = ultimo_km_lote.get(placa, 0)
+            dif_km = (km_arq - km_zuq_data) if (km_arq > 0 and km_zuq_data is not None and km_zuq_data > 0) else None
+
+            if km_arq == 0:
+                diag = "⚠️ KM ausente no ficheiro"
+            elif achou_data and km_zuq_data == km_arq:
+                diag = "✅ KM bate exato com ZUQ"
+            elif achou_data and km_zuq_data == 0:
+                diag = "✏️ ZUQ sem KM (será preenchido)"
+            elif achou_data and km_zuq_data != km_arq:
+                diag = f"⚠️ Divergente no ZUQ ({km_zuq_data} → {km_arq})"
+            elif km_ant_lote > 0 and km_arq < km_ant_lote:
+                diag = f"❌ Regressão no lote (< {km_ant_lote})"
+            elif maior_km_zuq > 0 and km_arq < maior_km_zuq:
+                diag = f"⚠️ Menor que último KM do ZUQ ({maior_km_zuq})"
+            elif maior_km_zuq > 0 and (km_arq - maior_km_zuq) > 3000:
+                diag = f"⚠️ Salto alto (+{km_arq - maior_km_zuq} km vs ZUQ)"
+            else:
+                diag = "✅ KM coerente para entrada"
+
+            if km_arq > 0:
+                ultimo_km_lote[placa] = max(km_ant_lote, km_arq)
+
+            resultados.append({
+                "Placa": placa,
+                "Placa ZUQ": info["placa_real"],
+                "Data": data_s,
+                "Litros": litros_f,
+                "KM Arquivo": km_arq if km_arq > 0 else None,
+                "KM ZUQ (Data)": km_zuq_data if achou_data else None,
+                "Maior KM ZUQ": maior_km_zuq if maior_km_zuq > 0 else None,
+                "Dif. KM": dif_km,
+                "Diagnóstico KM": diag,
+            })
+
+        progress_bar.progress(1.0, text="Checkup de KM concluído!")
+        log_container.success("🩺 Checkup prévio de KM concluído! Nenhum dado foi alterado no ZUQ.")
+    except Exception as e_chk:
+        log_container.error(f"❌ Erro durante o checkup de KM: {e_chk}")
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    return pd.DataFrame(resultados)
+
+
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
                   ui, pular_criticos=True, simular=False, stop_flag_path=None):
     # Ordena ANTES de copiar para manter os índices alinhados com o relatório
@@ -1584,6 +1822,7 @@ if verificar_senha():
                 st.session_state["dados_df"] = extrair_dados_multiplos_arquivos(uploaded_files)
                 st.session_state["ultimo_arquivo_id"] = file_id
                 st.session_state["resultado"] = None  # novo lote, limpa relatório antigo
+                st.session_state["checkup_km_df"] = None
                 st.session_state["kpis"] = None
                 st.session_state["log_hist"] = []
         else:
@@ -1663,6 +1902,12 @@ if verificar_senha():
         import tempfile
         stop_flag_path = os.path.join(tempfile.gettempdir(), "zuq_auto_stop.flag")
 
+        btn_checkup_km = st.button(
+            "🩺 Fazer Checkup de KM no ZUQ (Antes de Lançar)",
+            help="Consulta o ZUQ em modo somente leitura para conferir se os KMs batem antes de fazer qualquer entrada",
+            **STRETCH
+        )
+
         col_b1, col_b2 = st.columns([3, 1])
         btn_iniciar = col_b1.button("🧪 Simular Conciliação no ZUQ" if simular else "🚀 Iniciar Conciliação e Correção no ZUQ", **STRETCH)
         btn_parar = col_b2.button("🛑 Parar", help="Interrompe o lote atual com segurança e salva o progresso parcial", **STRETCH)
@@ -1684,6 +1929,19 @@ if verificar_senha():
         scroll_placeholder = st.empty()
         if not btn_iniciar and st.session_state.get("log_hist"):
             log_container.markdown("\n\n".join(msg for _, msg in st.session_state["log_hist"][-40:]))
+
+        if btn_checkup_km:
+            if df_para_processar is None or df_para_processar.empty:
+                st.error("Faça o upload de um ficheiro PDF/TXT válido antes do checkup.")
+            elif not senha_zuq:
+                st.error("Informe a senha do ZUQ nas configurações acima.")
+            else:
+                st.session_state["log_hist"] = []
+                log_chk = LogPersistente(log_container, st.session_state["log_hist"], scroll_placeholder=scroll_placeholder)
+                df_chk = executar_checkup_km_zuq(
+                    df_para_processar, url_zuq, usuario_zuq, senha_zuq, log_chk, progress_bar
+                )
+                st.session_state["checkup_km_df"] = df_chk
 
         if btn_iniciar:
             if os.path.exists(stop_flag_path):
@@ -1713,5 +1971,31 @@ if verificar_senha():
                     "df": df_resultado, "tempo": tempo_total,
                     "simulacao": simular, "parcial": interrompido
                 }
+
+    df_chk_vis = st.session_state.get("checkup_km_df")
+    if df_chk_vis is not None and not df_chk_vis.empty:
+        st.divider()
+        st.markdown("### 🩺 Checkup Prévio de KM (Ficheiro vs. ZUQ)")
+        diag_s = df_chk_vis["Diagnóstico KM"].astype(str)
+        qtd_ok_km = int(diag_s.str.startswith("✅").sum())
+        qtd_div_km = int(diag_s.str.contains("⚠️|❌|🚨|✏️").sum())
+
+        ck1, ck2, ck3 = st.columns(3)
+        ck1.metric("Total verificado", len(df_chk_vis))
+        ck2.metric("KMs que batem / coerentes", qtd_ok_km)
+        ck3.metric("Divergências / Atenção", qtd_div_km)
+
+        somente_div_km = st.checkbox("Mostrar apenas KMs com divergência ou atenção", value=False, key="chk_only_div")
+        df_chk_show = df_chk_vis[~diag_s.str.startswith("✅")] if somente_div_km else df_chk_vis
+        st.dataframe(df_chk_show, **STRETCH)
+
+        csv_chk = df_chk_vis.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        st.download_button(
+            label="📥 Baixar Checkup de KM (CSV)",
+            data=csv_chk,
+            file_name=f"checkup_km_zuq_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            **STRETCH
+        )
 
     mostrar_resultado()
