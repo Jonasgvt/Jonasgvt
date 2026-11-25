@@ -1088,10 +1088,24 @@ class LogPersistente:
 
 
 
+def _parse_data_hora_zuq(texto_dt):
+    """Converte '20/11/26 12:48' ou '20/11/2026 12:48:00' em datetime."""
+    if not texto_dt:
+        return None
+    s = str(texto_dt).strip()
+    for fmt in ("%d/%m/%y %H:%M", "%d/%m/%Y %H:%M", "%d/%m/%y %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%d/%m/%y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress_bar):
     """
-    Consulta o ZUQ em modo somente leitura ANTES de fazer qualquer entrada,
-    comparando os KMs do ficheiro Liveposto com o histórico/odómetro existente no ZUQ.
+    Consulta a aba Hodômetro (#/odometer) e Abastecimentos (#/fuel) no ZUQ em modo somente leitura
+    ANTES de fazer qualquer entrada, validando cronologicamente (Data + Hora) se cada KM do ficheiro
+    encaixa entre a leitura anterior e a leitura posterior do veículo.
     """
     df_ord = df.assign(
         _dt_ord=pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
@@ -1103,7 +1117,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
     wait = WebDriverWait(driver, 15)
 
     try:
-        log_container.info("🩺 Conectando ao ZUQ para checkup prévio de KM (somente leitura)...")
+        log_container.info("🩺 Conectando ao ZUQ para checkup cronológico de Hodômetro (somente leitura)...")
 
         def acao_login():
             navegar_com_timeout_seguro(driver, URL_ZUQ, timeout=12, log_container=log_container)
@@ -1123,21 +1137,22 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 campo_senha.send_keys(Keys.ENTER)
 
         executar_com_retry(acao_login, max_tentativas=3, log_container=log_container)
-        log_container.info("🔐 Login efetuado. Lendo histórico de KM das placas no ZUQ...")
+        log_container.info("🔐 Login efetuado. Lendo histórico cronológico na aba Hodômetro...")
         time.sleep(2.5)
 
         base_url = URL_ZUQ.rsplit('/secure', 1)[0] if '/secure' in URL_ZUQ else URL_ZUQ.rstrip('/')
-        navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12, log_container=log_container)
-        time.sleep(1.2)
+        navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=12, log_container=log_container)
+        time.sleep(1.3)
 
         placas_unicas = list(dict.fromkeys(
             re.sub(r'[^A-Z0-9]', '', str(p).upper()) for p in df_ord['placa'] if str(p).strip()
         ))
-        cache_zuq_placa = {}  # placa -> {"existe": bool, "placa_real": str, "linhas": [(data_txt, km_int, litros_f, preco_f)], "max_km": int}
+        # placa -> {"existe": bool, "placa_real": str, "leituras": [(dt_obj, dt_str, km_int, origem_txt)]}
+        cache_odo_placa = {}
 
         total_p = max(1, len(placas_unicas))
         for idx_p, placa in enumerate(placas_unicas):
-            progress_bar.progress((idx_p + 1) / total_p, text=f"Checkup KM: consultando placa {idx_p + 1}/{total_p} ({placa})...")
+            progress_bar.progress((idx_p + 1) / total_p, text=f"Checkup Hodômetro: placa {idx_p + 1}/{total_p} ({placa})...")
             try:
                 wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
                 time.sleep(0.5)
@@ -1193,7 +1208,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
                     time.sleep(0.4)
                     fechar_alerta_se_existir(driver, log_container)
-                    cache_zuq_placa[placa] = {"existe": False, "placa_real": placa, "linhas": [], "max_km": 0}
+                    cache_odo_placa[placa] = {"existe": False, "placa_real": placa, "leituras": []}
                     log_container.warning(f"🚨 Placa {placa} não encontrada no ZUQ.")
                     continue
 
@@ -1209,113 +1224,127 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                 time.sleep(1.2)
                 fechar_alerta_se_existir(driver, log_container)
 
-                linhas_zuq = []
-                max_km = 0
-                for tr in driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]"):
-                    txt_tr = tr.text or ""
+                # Lê tabela da aba Hodômetro: Tipo | Origem da entrada | Veículo | Hodômetro | Horimetro | Data
+                leituras = []
+                for tr in driver.find_elements(By.XPATH, "//table//tbody//tr"):
                     tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
+                    if len(tds) < 4:
+                        continue
+                    origem_txt = f"{tds[0]} {tds[1]}".strip()
                     km_tr = 0
+                    dt_obj = None
+                    dt_raw = ""
                     for cel in tds:
-                        cel_limpa = cel.replace('.', '').replace(',', '').strip()
-                        if re.search(r'\bkm\b', cel, flags=re.IGNORECASE) or (cel_limpa.isdigit() and len(cel_limpa) >= 4 and '/' not in cel and ':' not in cel):
-                            v_k = int(re.sub(r'\D', '', cel) or 0)
-                            if v_k > km_tr:
-                                km_tr = v_k
-                    if km_tr > max_km:
-                        max_km = km_tr
-                    linhas_zuq.append((txt_tr, tds, km_tr))
+                        m_km_cel = re.search(r'([\d\.]+)\s*km', cel, flags=re.IGNORECASE)
+                        if m_km_cel:
+                            km_tr = int(re.sub(r'\D', '', m_km_cel.group(1)) or 0)
+                        m_dt_cel = re.search(r'(\d{2}/\d{2}/\d{2,4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)', cel)
+                        if m_dt_cel:
+                            dt_raw = m_dt_cel.group(1)
+                            dt_obj = _parse_data_hora_zuq(dt_raw)
+                    if km_tr > 0 and dt_obj is not None:
+                        leituras.append((dt_obj, dt_raw, km_tr, origem_txt))
 
-                cache_zuq_placa[placa] = {
+                leituras.sort(key=lambda x: x[0])
+                cache_odo_placa[placa] = {
                     "existe": True,
                     "placa_real": placa_real,
-                    "linhas": linhas_zuq,
-                    "max_km": max_km,
+                    "leituras": leituras,
                 }
-                log_container.info(f"✅ {placa_real}: {len(linhas_zuq)} registro(s) no ZUQ · Maior KM registrado: {max_km or 'N/A'}")
+                log_container.info(f"✅ {placa_real}: {len(leituras)} leitura(s) de hodômetro lidas com data/hora.")
             except Exception as e_p:
                 try:
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
                 except Exception:
                     pass
-                cache_zuq_placa[placa] = {"existe": True, "placa_real": placa, "linhas": [], "max_km": 0}
-                log_container.warning(f"⚠️ Falha ao ler {placa}: {e_p}")
+                cache_odo_placa[placa] = {"existe": True, "placa_real": placa, "leituras": []}
+                log_container.warning(f"⚠️ Falha ao ler hodômetro de {placa}: {e_p}")
 
-        # Cruza cada linha do arquivo com os dados lidos do ZUQ
-        ultimo_km_lote = {}
+        # Cruza cada abastecimento do ficheiro pela DATA + HORA contra a linha do tempo do Hodômetro
+        ultimo_lote_dt_km = {}  # placa -> (dt_obj, km_int)
         for _, row in df_ord.iterrows():
             placa = re.sub(r'[^A-Z0-9]', '', str(row['placa']).upper())
             data_s = str(row['data']).strip()
+            hora_s = str(row.get('hora', '08:00:00')).strip()
             litros_f = limpa_numero(row['quantidade'])
-            preco_f = limpa_numero(row['valor_unitario'])
             km_arq = int(re.sub(r'\D', '', str(row['km'])) or 0)
+            dt_arq = _parse_data_hora_zuq(f"{data_s} {hora_s}") or _parse_data_hora_zuq(data_s)
 
-            info = cache_zuq_placa.get(placa, {"existe": False, "placa_real": placa, "linhas": [], "max_km": 0})
+            info = cache_odo_placa.get(placa, {"existe": False, "placa_real": placa, "leituras": []})
             if not info["existe"]:
                 resultados.append({
                     "Placa": placa,
                     "Placa ZUQ": "NÃO EXISTE",
-                    "Data": data_s,
+                    "Data/Hora": f"{data_s} {hora_s[:5]}",
                     "Litros": litros_f,
+                    "KM Anterior ZUQ": None,
                     "KM Arquivo": km_arq if km_arq > 0 else None,
-                    "KM ZUQ (Data)": None,
-                    "Maior KM ZUQ": None,
-                    "Dif. KM": None,
+                    "KM Posterior ZUQ": None,
                     "Diagnóstico KM": "🚨 Placa ausente no ZUQ",
                 })
                 continue
 
-            # Procura linha da mesma data no ZUQ
-            km_zuq_data = None
-            achou_data = False
-            for txt_tr, tds, km_tr in info["linhas"]:
-                if data_no_texto(txt_tr, data_s):
-                    nums = [limpa_numero(c) for c in tds if limpa_numero(c) > 0]
-                    l_ok = litros_f > 0 and any(abs(n - litros_f) < 0.1 for n in nums)
-                    p_ok = preco_f > 0 and any(abs(n - preco_f) < 0.05 for n in nums)
-                    if l_ok or p_ok or km_zuq_data is None:
-                        achou_data = True
-                        km_zuq_data = km_tr if km_tr > 0 else 0
+            leituras = info["leituras"]
+            # Leitura exata na mesma data (e hora próxima) vs anterior e posterior cronologicamente
+            leitura_mesma_data = None
+            anterior = None   # (dt_obj, dt_raw, km_tr)
+            posterior = None  # (dt_obj, dt_raw, km_tr)
 
-            maior_km_zuq = info["max_km"]
-            km_ant_lote = ultimo_km_lote.get(placa, 0)
-            dif_km = (km_arq - km_zuq_data) if (km_arq > 0 and km_zuq_data is not None and km_zuq_data > 0) else None
+            if dt_arq is not None:
+                for dt_l, dt_raw, km_l, orig_l in leituras:
+                    if dt_l.date() == dt_arq.date() and abs((dt_l - dt_arq).total_seconds()) <= 600:
+                        leitura_mesma_data = (dt_l, dt_raw, km_l)
+                    elif dt_l < dt_arq:
+                        anterior = (dt_l, dt_raw, km_l)
+                    elif dt_l > dt_arq and posterior is None:
+                        posterior = (dt_l, dt_raw, km_l)
+
+            # Também considera o item anterior do próprio lote se for cronologicamente mais recente que `anterior`
+            if placa in ultimo_lote_dt_km and dt_arq is not None:
+                dt_prev_lote, km_prev_lote = ultimo_lote_dt_km[placa]
+                if dt_prev_lote <= dt_arq and (anterior is None or dt_prev_lote >= anterior[0]):
+                    anterior = (dt_prev_lote, dt_prev_lote.strftime("%d/%m/%y %H:%M") + " (lote)", km_prev_lote)
+
+            km_ant = anterior[2] if anterior else None
+            km_post = posterior[2] if posterior else None
+            lbl_ant = f"{km_ant} ({anterior[1]})" if anterior else "—"
+            lbl_post = f"{km_post} ({posterior[1]})" if posterior else "—"
 
             if km_arq == 0:
                 diag = "⚠️ KM ausente no ficheiro"
-            elif achou_data and km_zuq_data == km_arq:
-                diag = "✅ KM bate exato com ZUQ"
-            elif achou_data and km_zuq_data == 0:
-                diag = "✏️ ZUQ sem KM (será preenchido)"
-            elif achou_data and km_zuq_data != km_arq:
-                diag = f"⚠️ Divergente no ZUQ ({km_zuq_data} → {km_arq})"
-            elif km_ant_lote > 0 and km_arq < km_ant_lote:
-                diag = f"❌ Regressão no lote (< {km_ant_lote})"
-            elif maior_km_zuq > 0 and km_arq < maior_km_zuq:
-                diag = f"⚠️ Menor que último KM do ZUQ ({maior_km_zuq})"
-            elif maior_km_zuq > 0 and (km_arq - maior_km_zuq) > 3000:
-                diag = f"⚠️ Salto alto (+{km_arq - maior_km_zuq} km vs ZUQ)"
+            elif leitura_mesma_data is not None and leitura_mesma_data[2] == km_arq:
+                diag = "✅ KM bate exato na data/hora"
+            elif leitura_mesma_data is not None and leitura_mesma_data[2] != km_arq:
+                diag = f"⚠️ Divergente no mesmo horário ({leitura_mesma_data[2]} → {km_arq})"
+            elif km_ant is not None and km_arq < km_ant:
+                diag = f"❌ Conflito: menor que anterior ({km_ant} em {anterior[1]})"
+            elif km_post is not None and km_arq > km_post:
+                diag = f"❌ Conflito: maior que posterior ({km_post} em {posterior[1]})"
+            elif km_ant is not None and km_post is not None:
+                diag = f"✅ Encaixa na janela ({km_ant} ≤ {km_arq} ≤ {km_post})"
+            elif km_ant is not None and (km_arq - km_ant) > 3000:
+                diag = f"⚠️ Salto alto (+{km_arq - km_ant} km desde {anterior[1]})"
             else:
-                diag = "✅ KM coerente para entrada"
+                diag = "✅ KM coerente na linha do tempo"
 
-            if km_arq > 0:
-                ultimo_km_lote[placa] = max(km_ant_lote, km_arq)
+            if km_arq > 0 and dt_arq is not None:
+                ultimo_lote_dt_km[placa] = (dt_arq, km_arq)
 
             resultados.append({
                 "Placa": placa,
                 "Placa ZUQ": info["placa_real"],
-                "Data": data_s,
+                "Data/Hora": f"{data_s} {hora_s[:5]}",
                 "Litros": litros_f,
+                "KM Anterior ZUQ": lbl_ant,
                 "KM Arquivo": km_arq if km_arq > 0 else None,
-                "KM ZUQ (Data)": km_zuq_data if achou_data else None,
-                "Maior KM ZUQ": maior_km_zuq if maior_km_zuq > 0 else None,
-                "Dif. KM": dif_km,
+                "KM Posterior ZUQ": lbl_post,
                 "Diagnóstico KM": diag,
             })
 
-        progress_bar.progress(1.0, text="Checkup de KM concluído!")
-        log_container.success("🩺 Checkup prévio de KM concluído! Nenhum dado foi alterado no ZUQ.")
+        progress_bar.progress(1.0, text="Checkup cronológico de Hodômetro concluído!")
+        log_container.success("🩺 Checkup cronológico de Hodômetro concluído! Nenhum dado foi alterado no ZUQ.")
     except Exception as e_chk:
-        log_container.error(f"❌ Erro durante o checkup de KM: {e_chk}")
+        log_container.error(f"❌ Erro durante o checkup de Hodômetro: {e_chk}")
     finally:
         try:
             driver.quit()
@@ -1323,8 +1352,6 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
             pass
 
     return pd.DataFrame(resultados)
-
-
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
                   ui, pular_criticos=True, simular=False, stop_flag_path=None):
     # Ordena ANTES de copiar para manter os índices alinhados com o relatório
