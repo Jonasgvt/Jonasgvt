@@ -28,7 +28,7 @@ from selenium.common.exceptions import (
 # ---------------------------------------------------------
 MAX_TENTATIVAS_LOGIN = 5
 BLOQUEIO_SEGUNDOS = 60
-REINICIAR_CHROME_A_CADA = 45
+REINICIAR_CHROME_A_CADA = 40
 COLUNAS_BASE = ['data', 'hora', 'cupom', 'placa', 'produto',
                 'quantidade', 'valor_unitario', 'valor_total', 'km']
 
@@ -413,7 +413,7 @@ def iniciar_sessao_zuq(URL_ZUQ, USUARIO, SENHA):
         except NoSuchElementException:
             campo_senha.send_keys(Keys.ENTER)
         WebDriverWait(driver, 12).until(lambda d: "login" not in d.current_url.lower())
-        time.sleep(1.2)
+        time.sleep(1.0)
 
     executar_com_retry(acao_login, max_tentativas=3)
     return driver, wait
@@ -451,36 +451,6 @@ def _km_encaixa_no_historico(leituras_odo, dt_alvo, km_alvo, margem_max_km=4000)
     return True
 
 
-def _abrir_modal_veiculos(driver, wait):
-    """Abre o modal #btn-allvehicles de forma resiliente e devolve o input visível dentro do modal."""
-    # Fecha qualquer modal residual antes
-    for btn_cancel in driver.find_elements(By.XPATH, "//div[contains(@class,'modal')]//button[contains(.,'Cancelar')]"):
-        try:
-            if btn_cancel.is_displayed():
-                btn_cancel.click()
-                time.sleep(0.2)
-        except Exception:
-            pass
-
-    btn_all = wait.until(EC.presence_of_element_located((By.ID, "btn-allvehicles")))
-    try:
-        btn_all.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", btn_all)
-
-    xp_inp = "//div[contains(@class,'modal') and (contains(@class,'in') or contains(@class,'show') or contains(@style,'display: block'))]//div[contains(@class,'selectize-input')]//input | //div[contains(@class,'selectize-input')]//input"
-    limite = time.time() + 6.0
-    while time.time() < limite:
-        for el in driver.find_elements(By.XPATH, xp_inp):
-            try:
-                if el.is_displayed():
-                    return el
-            except Exception:
-                continue
-        time.sleep(0.15)
-    raise TimeoutException("Input do modal de veículos não ficou visível.")
-
-
 def _selecionar_placa_no_modal_simples(driver, wait, placa_exata):
     """
     Retorna:
@@ -489,21 +459,20 @@ def _selecionar_placa_no_modal_simples(driver, wait, placa_exata):
       ("ERRO_UI", detalhe) -> falha/timeout ao abrir modal
     """
     try:
-        input_modal = _abrir_modal_veiculos(driver, wait)
+        wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
+        input_modal = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class,'selectize-input')]//input")))
     except Exception as e:
         fechar_alerta_se_existir(driver)
-        return "ERRO_UI", f"abrir_modal: {type(e).__name__}"
+        return "ERRO_UI", f"{type(e).__name__}"
 
     try:
-        for sel_f in driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']"):
-            if sel_f.is_displayed():
-                Select(sel_f).select_by_visible_text("Placa")
-                break
+        select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
+        if select_filtro:
+            Select(select_filtro[0]).select_by_visible_text("Placa")
 
         for rem in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//a[contains(@class,'remove')]"):
             try:
-                if rem.is_displayed():
-                    rem.click()
+                rem.click()
             except Exception:
                 pass
 
@@ -514,10 +483,10 @@ def _selecionar_placa_no_modal_simples(driver, wait, placa_exata):
 
         xp_opc = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa_exata}')]"
         try:
-            WebDriverWait(driver, 2.2).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
+            WebDriverWait(driver, 2.0).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
         except TimeoutException:
             pass
-        opcoes = [o for o in driver.find_elements(By.XPATH, xp_opc) if o.is_displayed()]
+        opcoes = driver.find_elements(By.XPATH, xp_opc)
         if not opcoes:
             try:
                 driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
@@ -532,14 +501,8 @@ def _selecionar_placa_no_modal_simples(driver, wait, placa_exata):
         except Exception:
             input_modal.send_keys(Keys.ESCAPE)
 
-        btn_conf = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))
-        )
-        try:
-            btn_conf.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", btn_conf)
-        time.sleep(0.85)
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))).click()
+        time.sleep(0.75)
         fechar_alerta_se_existir(driver)
         return "OK", ""
     except Exception as e:
@@ -548,24 +511,23 @@ def _selecionar_placa_no_modal_simples(driver, wait, placa_exata):
         except Exception:
             pass
         fechar_alerta_se_existir(driver)
-        return "ERRO_UI", f"selecionar: {type(e).__name__}"
+        return "ERRO_UI", f"{type(e).__name__}"
 
 
 def _buscar_placas_parecidas_no_modal(driver, wait, placa):
     try:
-        input_modal = _abrir_modal_veiculos(driver, wait)
+        wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
+        input_modal = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class,'selectize-input')]//input")))
     except Exception:
         return []
 
-    for sel_f in driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']"):
-        if sel_f.is_displayed():
-            Select(sel_f).select_by_visible_text("Placa")
-            break
+    select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
+    if select_filtro:
+        Select(select_filtro[0]).select_by_visible_text("Placa")
 
     for rem in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//a[contains(@class,'remove')]"):
         try:
-            if rem.is_displayed():
-                rem.click()
+            rem.click()
         except Exception:
             pass
 
@@ -577,7 +539,7 @@ def _buscar_placas_parecidas_no_modal(driver, wait, placa):
         input_modal.send_keys(termo)
         xp_t = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{termo}')]"
         try:
-            WebDriverWait(driver, 1.6).until(EC.presence_of_element_located((By.XPATH, xp_t)))
+            WebDriverWait(driver, 1.5).until(EC.presence_of_element_located((By.XPATH, xp_t)))
         except TimeoutException:
             pass
         for el_op in driver.find_elements(By.XPATH, xp_t):
@@ -611,7 +573,7 @@ def _limpar_campo_km_angular(driver):
     )
 
 
-def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=2.8):
+def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=2.5):
     limite = time.time() + timeout
     while time.time() < limite:
         if sair_do_novo and "/fuel/new" not in driver.current_url:
@@ -621,7 +583,7 @@ def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=2.8):
         erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
         if any(el.is_displayed() for el in erros_km):
             return
-        time.sleep(0.15)
+        time.sleep(0.12)
 
 
 def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
@@ -629,7 +591,7 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
         try:
             btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
             btn.click()
-            _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=2.8)
+            _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=2.5)
 
             erros_km = driver.find_elements(By.XPATH, "//*[contains(text(),'Odômetro Inválido') or contains(text(),'entra em conflito')]")
             if any(el.is_displayed() for el in erros_km):
@@ -637,7 +599,7 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
                 _limpar_campo_km_angular(driver)
                 btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
                 btn.click()
-                _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=2.8)
+                _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=2.5)
 
             if exigir_sair_do_novo and "/fuel/new" in driver.current_url:
                 return False
@@ -703,7 +665,7 @@ def _ler_leituras_odometro_ate_data(driver, dt_minima_alvo):
         if prox and novas > 0 and pagina < 25:
             try:
                 prox[0].click()
-                time.sleep(0.55)
+                time.sleep(0.5)
                 pagina += 1
                 continue
             except Exception:
@@ -718,8 +680,7 @@ def pre_analisar_hodometro(df, base_url, driver, wait, log_container, progress_b
     log_container.info("🩺 Fase 1/2 — Conferindo Hodômetro e validando KM entre placas parecidas...")
     navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=15)
     try:
-        wait.until(EC.presence_of_element_located((By.ID, "btn-allvehicles")))
-        time.sleep(0.8)
+        wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
     except Exception:
         log_container.warning("⚠️ Tela de Hodômetro demorou a abrir; seguindo direto para validação na entrada.")
         return set(), set(), {}
@@ -814,7 +775,7 @@ def pre_analisar_hodometro(df, base_url, driver, wait, log_container, progress_b
         else:
             ultimo_lote[placa_efetiva] = (dt_arq, km_arq)
 
-    log_container.info(f"✅ Pré-análise concluída ({len(conflitos)} conflito(s) de KM protegidos). Iniciando Fase 2/2...")
+    log_container.info(f"✅ Pré-análise concluída ({len(conflitos)} conflito(s) protegidos). Iniciando Fase 2/2...")
     return conflitos, placas_ausentes, placas_mapeadas
 
 
@@ -830,7 +791,6 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
         navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=15)
         st_sel, det_sel = _selecionar_placa_no_modal_simples(driver, wait, placa)
         if st_sel == "ERRO_UI":
-            # Tenta recarregar a página #/fuel uma vez antes de desistir
             navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=15)
             time.sleep(1.0)
             st_sel, det_sel = _selecionar_placa_no_modal_simples(driver, wait, placa)
