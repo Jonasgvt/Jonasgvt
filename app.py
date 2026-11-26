@@ -267,7 +267,7 @@ def verificar_senha():
 
 
 # ---------------------------------------------------------
-# UTILITÁRIOS
+# UTILITÁRIOS E NORMALIZAÇÃO DE PLACA
 # ---------------------------------------------------------
 def esperar(segundos, fator=1.0):
     time.sleep(max(0.05, float(segundos) * max(0.5, float(fator))))
@@ -320,6 +320,35 @@ def data_no_texto(texto, data_str):
         except ValueError:
             pass
     return any(re.search(r'(?<!\d)' + re.escape(v) + r'(?!\d)', texto) for v in variantes)
+
+
+def normalizar_placa(placa):
+    return re.sub(r'[^A-Z0-9]', '', str(placa or '').upper())
+
+
+def variacoes_placa_zero_letra(placa):
+    """
+    Gera variações de placa apenas para casos clássicos de troca 0 <-> O
+    quando a placa exata não é encontrada no ZUQ (ex.: SAA0E89 <-> SAAOE89).
+    Retorna lista ordenada sem duplicatas, começando pela placa original.
+    """
+    p = normalizar_placa(placa)
+    if not p:
+        return []
+    variantes = [p]
+    candidatos = set()
+
+    # Troca individual de 0 -> O ou O -> 0 em qualquer posição
+    for i, ch in enumerate(p):
+        if ch == '0':
+            candidatos.add(p[:i] + 'O' + p[i + 1:])
+        elif ch == 'O':
+            candidatos.add(p[:i] + '0' + p[i + 1:])
+
+    for v in sorted(candidatos):
+        if v not in variantes:
+            variantes.append(v)
+    return variantes
 
 
 # ---------------------------------------------------------
@@ -874,15 +903,38 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False,
         return False, f"Falha ao acionar Salvar: {e_save}"
 
 
+def _buscar_opcao_placa_selectize(driver, input_modal, placa_alvo, fator=1.0):
+    """
+    Busca placa no selectize tentando primeiro a grafia exata e, se não achar,
+    variações 0 <-> O (ex.: SAA0E89 <-> SAAOE89).
+    Retorna (placa_resolvida, lista_elementos_opcao).
+    """
+    for tentativa_p in variacoes_placa_zero_letra(placa_alvo):
+        input_modal.send_keys(Keys.CONTROL + "a")
+        input_modal.send_keys(Keys.BACKSPACE)
+        esperar(0.3, fator)
+        digitar_devagar(input_modal, tentativa_p, atraso=0.025, fator=fator)
+        xp_opc = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{tentativa_p}')]"
+        try:
+            WebDriverWait(driver, max(3.0, 3.5 * fator)).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
+        except TimeoutException:
+            pass
+        opcoes = driver.find_elements(By.XPATH, xp_opc)
+        if opcoes:
+            return tentativa_p, opcoes
+    return placa_alvo, []
+
+
 # ---------------------------------------------------------
 # CONCILIAÇÃO E EDIÇÃO ATIVA NO ZUQ
 # ---------------------------------------------------------
 def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros, preco,
                                 ultima_placa_filtrada, log_container, simular=False, fator=1.0):
     try:
+        placa_norm = normalizar_placa(placa)
         url_atual = driver.current_url.rstrip('/')
         na_lista = url_atual.endswith("#/fuel")
-        precisa_filtrar = (placa != ultima_placa_filtrada) or (not na_lista)
+        precisa_filtrar = (placa_norm != normalizar_placa(ultima_placa_filtrada)) or (not na_lista)
 
         if precisa_filtrar:
             navegar_com_timeout_seguro(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=20, log_container=log_container, fator=fator)
@@ -908,49 +960,18 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                     except Exception:
                         pass
 
-                input_modal.send_keys(Keys.CONTROL + "a")
-                input_modal.send_keys(Keys.BACKSPACE)
-                esperar(0.35, fator)
-                digitar_devagar(input_modal, placa, atraso=0.025, fator=fator)
-                xp_opc_f = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]"
-                try:
-                    WebDriverWait(driver, max(3.5, 4.0 * fator)).until(EC.presence_of_element_located((By.XPATH, xp_opc_f)))
-                except TimeoutException:
-                    pass
-                opcoes = driver.find_elements(By.XPATH, xp_opc_f)
-                placa_corrigida_de = ""
-                if not opcoes and len(placa) == 7:
-                    sufixo = placa[-4:]
-                    input_modal.send_keys(Keys.CONTROL + "a")
-                    input_modal.send_keys(Keys.BACKSPACE)
-                    esperar(0.3, fator)
-                    digitar_devagar(input_modal, sufixo, atraso=0.025, fator=fator)
-                    xp_opc_suf = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{sufixo}')]"
-                    try:
-                        WebDriverWait(driver, max(3.0, 3.5 * fator)).until(EC.presence_of_element_located((By.XPATH, xp_opc_suf)))
-                    except TimeoutException:
-                        pass
-                    candidatos_zuq = []
-                    for el_op in driver.find_elements(By.XPATH, xp_opc_suf):
-                        m_p_zuq = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', el_op.text.upper().replace('-', ''))
-                        if m_p_zuq:
-                            p_cand = m_p_zuq.group(1)
-                            if len(p_cand) == 7 and sum(a != b for a, b in zip(placa, p_cand)) == 1:
-                                candidatos_zuq.append((p_cand, el_op))
-                    placas_distintas = {p for p, _ in candidatos_zuq}
-                    if len(placas_distintas) == 1:
-                        placa_nova = next(iter(placas_distintas))
-                        opcoes = [el for p, el in candidatos_zuq if p == placa_nova]
-                        placa_corrigida_de = placa
-                        placa = placa_nova
-                        log_container.warning(f"🔄 Placa {placa_corrigida_de} não existe no ZUQ; corrigida automaticamente para **{placa}** (1 dígito divergente).")
+                placa_resolvida, opcoes = _buscar_opcao_placa_selectize(driver, input_modal, placa_norm, fator=fator)
 
                 if not opcoes:
-                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa} não existe no ZUQ!")
+                    log_container.warning(f"🚨 DIVERGÊNCIA: Placa {placa_norm} (e variações 0/O) não existe no ZUQ!")
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
                     esperar(1.0, fator)
                     fechar_alerta_se_existir(driver, log_container, fator=fator)
                     return "NAO_ENCONTRADA", "Placa não encontrada no ZUQ", ""
+
+                if placa_resolvida != placa_norm:
+                    log_container.warning(f"🔄 Placa {placa_norm} ajustada para **{placa_resolvida}** (variação 0/O localizada no ZUQ).")
+                placa_norm = placa_resolvida
 
                 opcoes[0].click()
                 esperar(0.5, fator)
@@ -992,15 +1013,15 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
         candidatos.sort(key=lambda c: c[0], reverse=True)
 
         if not candidatos or candidatos[0][0] == 0:
-            log_container.info(f"➕ Nenhum registro correspondente. Criando novo para {placa}...")
-            return "CRIAR", "Criar Novo", placa
+            log_container.info(f"➕ Nenhum registro correspondente. Criando novo para {placa_norm}...")
+            return "CRIAR", "Criar Novo", placa_norm
 
         melhor_score, linha_encontrada, l_ok, p_ok, k_ok = candidatos[0]
         if melhor_score == 1 and len(candidatos) > 1:
-            log_container.warning(f"❓ Correspondência ambígua para {placa} ({data}). Revisar manualmente.")
-            return "ERRO", "Ambíguo: várias linhas na mesma data, revisar manualmente", placa
+            log_container.warning(f"❓ Correspondência ambígua para {placa_norm} ({data}). Revisar manualmente.")
+            return "ERRO", "Ambíguo: várias linhas na mesma data, revisar manualmente", placa_norm
 
-        log_container.info(f"🔍 Registro localizado no ZUQ para {placa} ({data}). Verificando divergências...")
+        log_container.info(f"🔍 Registro localizado no ZUQ para {placa_norm} ({data}). Verificando divergências...")
 
         tds_texto = [td.text.strip() for td in linha_encontrada.find_elements(By.TAG_NAME, "td")]
         tem_zerado = any(t in ("0,00", "0.00") for t in tds_texto)
@@ -1026,10 +1047,10 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         if not precisa_editar:
             if km_suspeito_na_edicao:
-                log_container.info(f"✅ Registro no ZUQ ({placa} {data}) preservado: KM do PDF ({km_novo_int}) conflita com ZUQ ({km_atual_int}).")
-                return "OK", f"Já cadastrado (KM do PDF {km_novo_int} ignorado; ZUQ mantém {km_atual_int})", placa
+                log_container.info(f"✅ Registro no ZUQ ({placa_norm} {data}) preservado: KM do PDF ({km_novo_int}) conflita com ZUQ ({km_atual_int}).")
+                return "OK", f"Já cadastrado (KM do PDF {km_novo_int} ignorado; ZUQ mantém {km_atual_int})", placa_norm
             log_container.info("✅ Registro no ZUQ já está 100% correto.")
-            return "OK", "Já cadastrado (sem divergência)", placa
+            return "OK", "Já cadastrado (sem divergência)", placa_norm
 
         divergencias = []
         if target_km and not k_ok and not km_suspeito_na_edicao:
@@ -1044,10 +1065,10 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         detalhe_div = " | ".join(divergencias)
         if simular:
-            log_container.warning(f"🧪 [SIMULAÇÃO] {placa} seria atualizado ({detalhe_div}).")
-            return "SIM_ATUALIZAR", f"Simulação: atualizaria ({detalhe_div})", placa
+            log_container.warning(f"🧪 [SIMULAÇÃO] {placa_norm} seria atualizado ({detalhe_div}).")
+            return "SIM_ATUALIZAR", f"Simulação: atualizaria ({detalhe_div})", placa_norm
 
-        log_container.warning(f"✏️ Divergência em {placa} ({detalhe_div}). Editando no ZUQ...")
+        log_container.warning(f"✏️ Divergência em {placa_norm} ({detalhe_div}). Editando no ZUQ...")
         try:
             link = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
             navegar_com_timeout_seguro(driver, link.get_attribute("href"), timeout=20, log_container=log_container, fator=fator)
@@ -1083,10 +1104,10 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         ok_save, nota = salvar_formulario(
             driver, wait, log_container,
-            base_url=base_url, placa=placa, data_str=data, km_str=km, fator=fator
+            base_url=base_url, placa=placa_norm, data_str=data, km_str=km, fator=fator
         )
         if ok_save:
-            log_container.success(f"✅ Atualizado no ZUQ ({placa}): {detalhe_div}")
+            log_container.success(f"✅ Atualizado no ZUQ ({placa_norm}): {detalhe_div}")
             return "ATUALIZADO", f"Corrigido ({detalhe_div})" + (f" — {nota}" if nota else ""), ""
         return "ERRO", f"Falha ao salvar edição: {nota}", ""
 
@@ -1264,7 +1285,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
         esperar(1.8, fator)
 
         placas_unicas = list(dict.fromkeys(
-            re.sub(r'[^A-Z0-9]', '', str(p).upper()) for p in df_ord['placa'] if str(p).strip()
+            normalizar_placa(p) for p in df_ord['placa'] if str(p).strip()
         ))
         cache_odo_placa = {}
 
@@ -1293,37 +1314,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
                     except Exception:
                         pass
 
-                input_modal.send_keys(Keys.CONTROL + "a")
-                input_modal.send_keys(Keys.BACKSPACE)
-                digitar_devagar(input_modal, placa, atraso=0.025, fator=fator)
-
-                xp_opc = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{placa}')]"
-                try:
-                    WebDriverWait(driver, max(3.0, 3.5 * fator)).until(EC.presence_of_element_located((By.XPATH, xp_opc)))
-                except TimeoutException:
-                    pass
-                opcoes = driver.find_elements(By.XPATH, xp_opc)
-                placa_real = placa
-
-                if not opcoes and len(placa) == 7:
-                    sufixo = placa[-4:]
-                    input_modal.send_keys(Keys.CONTROL + "a")
-                    input_modal.send_keys(Keys.BACKSPACE)
-                    digitar_devagar(input_modal, sufixo, atraso=0.025, fator=fator)
-                    xp_suf = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(.,'{sufixo}')]"
-                    try:
-                        WebDriverWait(driver, max(2.5, 3.0 * fator)).until(EC.presence_of_element_located((By.XPATH, xp_suf)))
-                    except TimeoutException:
-                        pass
-                    cands = []
-                    for el_op in driver.find_elements(By.XPATH, xp_suf):
-                        m_p = re.search(r'([A-Z]{3}[0-9][A-Z0-9][0-9]{2})', el_op.text.upper().replace('-', ''))
-                        if m_p and len(m_p.group(1)) == 7 and sum(a != b for a, b in zip(placa, m_p.group(1))) == 1:
-                            cands.append((m_p.group(1), el_op))
-                    distintas = {p for p, _ in cands}
-                    if len(distintas) == 1:
-                        placa_real = next(iter(distintas))
-                        opcoes = [el for p, el in cands if p == placa_real]
+                placa_real, opcoes = _buscar_opcao_placa_selectize(driver, input_modal, placa, fator=fator)
 
                 if not opcoes:
                     driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
@@ -1362,7 +1353,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
 
         ultimo_lote_dt_km = {}
         for _, row in df_ord.iterrows():
-            placa = re.sub(r'[^A-Z0-9]', '', str(row['placa']).upper())
+            placa = normalizar_placa(row['placa'])
             data_s = str(row['data']).strip()
             hora_s = str(row.get('hora', '08:00:00')).strip()
             cupom_s = str(row.get('cupom', '0')).strip()
@@ -1566,7 +1557,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 texto_prog = f"Processando 1 de {total_registros}"
             progress_bar.progress((idx + 1) / total_registros, text=texto_prog)
 
-            placa_str = re.sub(r'[^A-Z0-9]', '', str(row['placa']).upper())
+            placa_str = normalizar_placa(row['placa'])
             km_str = re.sub(r'\D', '', str(row['km'])) if pd.notna(row['km']) else ""
             cupom_str = str(row['cupom']) if pd.notna(row.get('cupom')) else "0"
             hora_str = str(row['hora']) if pd.notna(row.get('hora')) else "08:00:00"
@@ -1599,20 +1590,23 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 placa_str = placas_mapeadas_zuq[placa_str]
                 df_relatorio.at[idx, 'placa'] = placa_str
 
-            acao, obs, ultima_placa_filtrada = conciliar_ou_criar_registro(
+            acao, obs, placa_filtrada_ret = conciliar_ou_criar_registro(
                 driver, wait, base_url, placa_str, data_str, km_str, litros_str, preco_str,
                 ultima_placa_filtrada, log_container, simular, fator=fator
             )
+            if placa_filtrada_ret:
+                ultima_placa_filtrada = placa_filtrada_ret
+
             if acao == "NAO_ENCONTRADA":
                 placas_inexistentes_zuq.add(placa_orig_pdf)
-            elif ultima_placa_filtrada and ultima_placa_filtrada != placa_orig_pdf:
-                placas_mapeadas_zuq[placa_orig_pdf] = ultima_placa_filtrada
-                obs = f"{obs} (Placa corrigida: {placa_orig_pdf} -> {ultima_placa_filtrada})"
-                placa_str = ultima_placa_filtrada
+            elif placa_filtrada_ret and placa_filtrada_ret != placa_orig_pdf:
+                placas_mapeadas_zuq[placa_orig_pdf] = placa_filtrada_ret
+                obs = f"{obs} (Placa corrigida: {placa_orig_pdf} -> {placa_filtrada_ret})"
+                placa_str = placa_filtrada_ret
                 df_relatorio.at[idx, 'placa'] = placa_str
                 if st.session_state.get("dados_df") is not None and "placa" in st.session_state["dados_df"].columns:
                     mask_p = st.session_state["dados_df"]["placa"].astype(str).str.upper().str.replace("-", "", regex=False) == placa_orig_pdf
-                    st.session_state["dados_df"].loc[mask_p, "placa"] = ultima_placa_filtrada
+                    st.session_state["dados_df"].loc[mask_p, "placa"] = placa_filtrada_ret
 
             if acao == "OK":
                 registrar(idx, 'Já correto', obs, 'ok', t_ini)
@@ -1654,26 +1648,33 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 box_v.click()
                 esperar(0.5, fator)
                 inp = driver.find_element(By.XPATH, XP_VEICULO + "//input")
-                inp.send_keys(Keys.CONTROL + "a")
-                inp.send_keys(Keys.BACKSPACE)
-                digitar_devagar(inp, placa_str, atraso=0.025, fator=fator)
-                xp_opc_v = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(@class,'option') and contains(.,'{placa_str}')]"
-                try:
-                    WebDriverWait(driver, max(3.5, 4.0 * fator)).until(EC.element_to_be_clickable((By.XPATH, xp_opc_v)))
-                except TimeoutException:
-                    pass
-                opcoes = driver.find_elements(By.XPATH, xp_opc_v)
-                if not opcoes:
-                    return False
-                opcoes[0].click()
-                esperar(0.7, fator)
-                return True
+                for var_p in variacoes_placa_zero_letra(placa_str):
+                    inp.send_keys(Keys.CONTROL + "a")
+                    inp.send_keys(Keys.BACKSPACE)
+                    esperar(0.25, fator)
+                    digitar_devagar(inp, var_p, atraso=0.025, fator=fator)
+                    xp_opc_v = f"//div[contains(@class,'selectize-dropdown-content')]//div[contains(@class,'option') and contains(.,'{var_p}')]"
+                    try:
+                        WebDriverWait(driver, max(3.5, 4.0 * fator)).until(EC.element_to_be_clickable((By.XPATH, xp_opc_v)))
+                    except TimeoutException:
+                        pass
+                    opcoes = driver.find_elements(By.XPATH, xp_opc_v)
+                    if opcoes:
+                        opcoes[0].click()
+                        esperar(0.7, fator)
+                        return var_p
+                return ""
 
             try:
-                if not executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container, fator=fator):
+                placa_form_sel = executar_com_retry(selecionar_veiculo, max_tentativas=3, log_container=log_container, fator=fator)
+                if not placa_form_sel:
                     log_container.warning(f"⚠️ Veículo {placa_str} não localizado no ZUQ.")
                     registrar(idx, 'Ignorado', 'Veículo não localizado', 'erros', t_ini)
                     continue
+                if placa_form_sel != placa_str:
+                    log_container.warning(f"🔄 Placa {placa_str} selecionada no formulário como **{placa_form_sel}** (variação 0/O).")
+                    placa_str = placa_form_sel
+                    df_relatorio.at[idx, 'placa'] = placa_str
             except Exception as e_v:
                 log_container.error(f"Erro no veículo {placa_str}: {e_v}")
                 registrar(idx, 'Erro', f"Erro no veículo: {e_v}", 'erros', t_ini)
