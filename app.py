@@ -1038,22 +1038,16 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         km_novo_int = int(re.sub(r'\D', '', str(km)) or 0) if km else 0
         km_atual_int = int(re.sub(r'\D', '', str(zuq_km_atual)) or 0) if zuq_km_atual else 0
-        km_suspeito_na_edicao = bool(
-            km_novo_int > 0 and km_atual_int > 0 and (km_novo_int < km_atual_int or (km_novo_int - km_atual_int) > 5000)
-        )
-
-        precisa_editar = (target_km and not k_ok and not km_suspeito_na_edicao) or (target_preco > 0 and not p_ok) \
+        # O KM do PDF é a fonte da verdade: se diferir do ZUQ, corrige (inclusive quando for menor ou com salto grande).
+        precisa_editar = (target_km and not k_ok) or (target_preco > 0 and not p_ok) \
             or (target_litros > 0 and not l_ok) or tem_zerado
 
         if not precisa_editar:
-            if km_suspeito_na_edicao:
-                log_container.info(f"✅ Registro no ZUQ ({placa_norm} {data}) preservado: KM do PDF ({km_novo_int}) conflita com ZUQ ({km_atual_int}).")
-                return "OK", f"Já cadastrado (KM do PDF {km_novo_int} ignorado; ZUQ mantém {km_atual_int})", placa_norm
             log_container.info("✅ Registro no ZUQ já está 100% correto.")
             return "OK", "Já cadastrado (sem divergência)", placa_norm
 
         divergencias = []
-        if target_km and not k_ok and not km_suspeito_na_edicao:
+        if target_km and not k_ok:
             divergencias.append(f"KM: {zuq_km_atual or 'vazio'} → {target_km}")
         if target_preco > 0 and not p_ok:
             p_ant = next((v for v in zuq_vals_dec if PRECO_MIN <= v <= PRECO_MAX), None)
@@ -1095,7 +1089,7 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                 log_container.info(f"✏️ Volume corrigido para {litros} L")
             except Exception:
                 pass
-        if km and km != "0" and not km_suspeito_na_edicao:
+        if km and km != "0":
             try:
                 preencher_campo_angular(driver, driver.find_element(By.XPATH, XP_KM), km, fator=fator)
                 log_container.info(f"✏️ KM corrigido para {km}")
