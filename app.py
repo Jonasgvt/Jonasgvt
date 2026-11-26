@@ -411,59 +411,92 @@ def _extrair_unico_arquivo(uploaded_file):
             cupons = re.findall(r'\b(\d{5,7})\b', antes_placa)
             cupom = cupons[0] if cupons else "0"
 
+            bloco_linhas = [line]
             j = i + 1
             while j < len(lines):
                 sub_line = lines[j].strip()
-
                 if "Total da Placa:" in sub_line or re.search(re_placa, sub_line):
                     break
+                bloco_linhas.append(sub_line)
+                j += 1
 
-                if any(comb in sub_line.upper() for comb in combustiveis_validos):
-                    u_sub = sub_line.upper()
-                    if "DIESEL" in u_sub:
-                        produto_nome = "DIESEL B S10 ADITIVADO" if "ADITIV" in u_sub or "S10" in u_sub or "S-10" in u_sub else "DIESEL"
-                    elif "GASOLINA" in u_sub:
-                        produto_nome = "GASOLINA ADITIVADA" if "ADITIV" in u_sub else "GASOLINA COMUM"
-                    elif "ETANOL" in u_sub or "ALCOOL" in u_sub or "ÁLCOOL" in u_sub:
-                        produto_nome = "ETANOL"
-                    else:
-                        produto_nome = sub_line.split()[0]
+            bloco_txt = "\n".join(bloco_linhas)
+            if any(comb in bloco_txt.upper() for comb in combustiveis_validos):
+                u_bloco = bloco_txt.upper()
+                if "DIESEL" in u_bloco:
+                    produto_nome = "DIESEL B S10 ADITIVADO" if ("ADITIV" in u_bloco or "S10" in u_bloco or "S-10" in u_bloco) else "DIESEL"
+                elif "GASOLINA" in u_bloco:
+                    produto_nome = "GASOLINA ADITIVADA" if "ADITIV" in u_bloco else "GASOLINA COMUM"
+                elif "ETANOL" in u_bloco or "ALCOOL" in u_bloco or "ÁLCOOL" in u_bloco:
+                    produto_nome = "ETANOL"
+                else:
+                    produto_nome = "DIESEL"
 
-                    nums_validos = re.findall(r'\d+(?:\.\d{3})*,\d+', sub_line)
-                    vlr_unit, quantidade, valor_total = "0,00", "0,00", "0,00"
-                    if len(nums_validos) >= 3:
-                        vlr_unit, quantidade, valor_total = nums_validos[0], nums_validos[1], nums_validos[2]
-                    elif len(nums_validos) == 2:
-                        vlr_unit, quantidade = nums_validos[0], nums_validos[1]
-                    elif len(nums_validos) == 1:
-                        vlr_unit = nums_validos[0]
+                nums_str = re.findall(r'\d+(?:\.\d{3})*,\d+', bloco_txt)
+                nums_flt = [(s, limpa_numero(s)) for s in nums_str]
 
+                preco_cand = next(((s, v) for s, v in nums_flt if PRECO_MIN <= v <= PRECO_MAX), None)
+                vlr_unit = preco_cand[0] if preco_cand else "0,00"
+                p_val = preco_cand[1] if preco_cand else 0.0
+
+                litros_cand = None
+                for s, v in nums_flt:
+                    if preco_cand and s == preco_cand[0]:
+                        continue
+                    dec_len = len(s.split(',')[1]) if ',' in s else 0
+                    if 0 < v <= LITROS_MAX and dec_len == 3:
+                        litros_cand = (s, v)
+                        break
+
+                if not litros_cand and p_val > 0:
+                    for idx_a, (sa, va) in enumerate(nums_flt):
+                        if preco_cand and idx_a == nums_flt.index(preco_cand):
+                            continue
+                        if not (0 < va <= LITROS_MAX):
+                            continue
+                        for idx_b, (sb, vb) in enumerate(nums_flt):
+                            if idx_a == idx_b:
+                                continue
+                            if abs((va * p_val) - vb) <= max(0.5, TOL_TOTAL * max(vb, 1.0)):
+                                litros_cand = (sa, va)
+                                break
+                        if litros_cand:
+                            break
+
+                if not litros_cand:
+                    for s, v in nums_flt:
+                        if preco_cand and s == preco_cand[0]:
+                            continue
+                        if 0 < v <= LITROS_MAX:
+                            litros_cand = (s, v)
+                            break
+
+                quantidade = litros_cand[0] if litros_cand else "0,00"
+                l_val = litros_cand[1] if litros_cand else 0.0
+                valor_total = f"{(l_val * p_val):.2f}".replace('.', ',') if (l_val > 0 and p_val > 0) else "0,00"
+
+                km = ""
+                m_km_ponto = re.search(r'(?<!\d)(\d{1,3}(?:\.\d{3})+)', bloco_txt)
+                if m_km_ponto:
+                    km = m_km_ponto.group(1).replace('.', '')
+                else:
                     depois_placa = line[m_placa.end():]
                     depois_sem_dep = re.sub(r'\bCARRO\s+\d+\b', ' ', depois_placa, flags=re.IGNORECASE)
+                    m_colado = re.search(r'(?<!\d)(\d+,\d{2})\b', depois_sem_dep)
+                    if m_colado:
+                        bloco_antes_virgula = m_colado.group(1).split(',')[0]
+                        qtd_int = str(int(round(l_val))) if l_val > 0 else ""
+                        if qtd_int and len(bloco_antes_virgula) > len(qtd_int) and bloco_antes_virgula.endswith(qtd_int):
+                            km = bloco_antes_virgula[:-len(qtd_int)]
+                        elif len(bloco_antes_virgula) > 3:
+                            km = bloco_antes_virgula[:-2] if int(bloco_antes_virgula[-3:]) > 600 else bloco_antes_virgula[:-3]
 
-                    km = ""
-                    m_km_ponto = re.search(r'(?<!\d)(\d{1,3}(?:\.\d{3})+)', depois_sem_dep)
-                    if m_km_ponto:
-                        km = m_km_ponto.group(1).replace('.', '')
-                    else:
-                        m_colado = re.search(r'(?<!\d)(\d+,\d{2})\b', depois_sem_dep)
-                        if m_colado:
-                            bloco_antes_virgula = m_colado.group(1).split(',')[0]
-                            qtd_num = limpa_numero(quantidade)
-                            qtd_int = str(int(round(qtd_num))) if qtd_num > 0 else ""
-                            if qtd_int and len(bloco_antes_virgula) > len(qtd_int) and bloco_antes_virgula.endswith(qtd_int):
-                                km = bloco_antes_virgula[:-len(qtd_int)]
-                            elif len(bloco_antes_virgula) > 3:
-                                km = bloco_antes_virgula[:-2] if int(bloco_antes_virgula[-3:]) > 600 else bloco_antes_virgula[:-3]
-
-                    registos.append({
-                        'data': dt_str, 'hora': hora, 'cupom': cupom, 'placa': placa,
-                        'produto': produto_nome, 'quantidade': quantidade,
-                        'valor_unitario': vlr_unit, 'valor_total': valor_total, 'km': km,
-                        'linha_bruta': line, 'arquivo_origem': nome_orig,
-                    })
-                    break
-                j += 1
+                registos.append({
+                    'data': dt_str, 'hora': hora, 'cupom': cupom, 'placa': placa,
+                    'produto': produto_nome, 'quantidade': quantidade,
+                    'valor_unitario': vlr_unit, 'valor_total': valor_total, 'km': km,
+                    'linha_bruta': bloco_txt.replace('\n', ' // '), 'arquivo_origem': nome_orig,
+                })
         i += 1
 
     posto_detectado = ""
@@ -763,7 +796,6 @@ def _limpar_campo_km_angular(driver):
 
 
 def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=14.0):
-    """Aguarda pacientemente a conclusão do save no AngularJS (mudança de rota ou erro visível)."""
     limite = time.time() + timeout
     while time.time() < limite:
         url = driver.current_url
@@ -788,7 +820,6 @@ def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=14.0):
 
 
 def _clicar_botao_salvar(driver, wait, fator=1.0):
-    """Localiza e clica no botão Salvar aguardando ele sair de estado ocupada se necessário."""
     xpaths = [
         "//a[contains(@class,'btn') and .//span[normalize-space()='Salvar']]",
         "//button[contains(@class,'btn') and (.//span[normalize-space()='Salvar'] or normalize-space()='Salvar')]",
@@ -814,7 +845,6 @@ def _clicar_botao_salvar(driver, wait, fator=1.0):
 
 def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False,
                       base_url="", placa="", data_str="", km_str="", fator=1.0):
-    """Clica em Salvar com tempo extra para o ZUQ processar, trata conflito de KM e retorna (ok, nota)."""
     espera_save = max(12.0, 14.0 * max(1.0, float(fator)))
     try:
         _clicar_botao_salvar(driver, wait, fator=fator)
@@ -974,12 +1004,6 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
 
         tds_texto = [td.text.strip() for td in linha_encontrada.find_elements(By.TAG_NAME, "td")]
         tem_zerado = any(t in ("0,00", "0.00") for t in tds_texto)
-        precisa_editar = (target_km and not k_ok) or (target_preco > 0 and not p_ok) \
-            or (target_litros > 0 and not l_ok) or tem_zerado
-
-        if not precisa_editar:
-            log_container.info("✅ Registro no ZUQ já está 100% correto.")
-            return "OK", "Já cadastrado (sem divergência)", placa
 
         zuq_km_atual = ""
         zuq_vals_dec = []
@@ -991,8 +1015,24 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                 if v_cel > 0:
                     zuq_vals_dec.append(v_cel)
 
+        km_novo_int = int(re.sub(r'\D', '', str(km)) or 0) if km else 0
+        km_atual_int = int(re.sub(r'\D', '', str(zuq_km_atual)) or 0) if zuq_km_atual else 0
+        km_suspeito_na_edicao = bool(
+            km_novo_int > 0 and km_atual_int > 0 and (km_novo_int < km_atual_int or (km_novo_int - km_atual_int) > 5000)
+        )
+
+        precisa_editar = (target_km and not k_ok and not km_suspeito_na_edicao) or (target_preco > 0 and not p_ok) \
+            or (target_litros > 0 and not l_ok) or tem_zerado
+
+        if not precisa_editar:
+            if km_suspeito_na_edicao:
+                log_container.info(f"✅ Registro no ZUQ ({placa} {data}) preservado: KM do PDF ({km_novo_int}) conflita com ZUQ ({km_atual_int}).")
+                return "OK", f"Já cadastrado (KM do PDF {km_novo_int} ignorado; ZUQ mantém {km_atual_int})", placa
+            log_container.info("✅ Registro no ZUQ já está 100% correto.")
+            return "OK", "Já cadastrado (sem divergência)", placa
+
         divergencias = []
-        if target_km and not k_ok:
+        if target_km and not k_ok and not km_suspeito_na_edicao:
             divergencias.append(f"KM: {zuq_km_atual or 'vazio'} → {target_km}")
         if target_preco > 0 and not p_ok:
             p_ant = next((v for v in zuq_vals_dec if PRECO_MIN <= v <= PRECO_MAX), None)
@@ -1034,7 +1074,7 @@ def conciliar_ou_criar_registro(driver, wait, base_url, placa, data, km, litros,
                 log_container.info(f"✏️ Volume corrigido para {litros} L")
             except Exception:
                 pass
-        if km and km != "0":
+        if km and km != "0" and not km_suspeito_na_edicao:
             try:
                 preencher_campo_angular(driver, driver.find_element(By.XPATH, XP_KM), km, fator=fator)
                 log_container.info(f"✏️ KM corrigido para {km}")
@@ -1415,8 +1455,8 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
 
 
 def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progress_bar,
-                  ui, pular_criticos=True, simular=False, stop_flag_path=None, fator_tempo=1.0):
-    fator = max(0.5, float(fator_tempo or 1.0))
+                  ui, pular_criticos=True, simular=False, stop_flag_path=None, fator_tempo=1.5):
+    fator = max(0.5, float(fator_tempo or 1.5))
     df = df.assign(
         _dt_ord=pd.to_datetime(df['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce'),
         _hr_ord=df['hora'].astype(str).str.strip()
@@ -1916,7 +1956,7 @@ if verificar_senha():
         senha_zuq = c2.text_input("Senha ZUQ", type="password", value=_segredo("ZUQ_PASSWORD", ""))
         url_zuq = c3.text_input("URL ZUQ", value=_segredo("ZUQ_URL", "https://app.zuq.com.br"))
         fornecedor_zuq = c4.text_input("Fornecedor Padrão", value=_segredo("ZUQ_FORNECEDOR", "POSTO GURI - MACEIÓ"))
-        fator_tempo = c5.number_input("Tempo extra ZUQ", min_value=0.5, max_value=3.0, value=1.2, step=0.1, help="Multiplica as esperas se o ZUQ estiver lento (ex.: 1.5 = 50% mais tempo)")
+        fator_tempo = c5.number_input("Tempo extra ZUQ", min_value=0.5, max_value=3.0, value=1.5, step=0.1, help="Multiplica as esperas se o ZUQ estiver lento (ex.: 1.5 = 50% mais tempo)")
 
     posto_pdf = st.session_state.get("posto_detectado_pdf", "")
     if posto_pdf and posto_pdf.upper() not in fornecedor_zuq.upper():
