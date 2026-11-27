@@ -247,9 +247,11 @@ def _extrair_unico_arquivo(uploaded_file):
             for page in reader.pages:
                 texto_pag = page.extract_text()
                 if texto_pag:
-                    lines.extend(texto_pag.split("\n"))
+                    lines.extend(texto_pag.split("
+"))
         else:
-            lines = file_bytes.decode("latin1", errors="ignore").split("\n")
+            lines = file_bytes.decode("latin1", errors="ignore").split("
+")
     except Exception as e:
         st.error(f"❌ Erro ao ler {nome_orig}: {e}")
         return pd.DataFrame()
@@ -285,7 +287,7 @@ def _extrair_unico_arquivo(uploaded_file):
                 antes_placa = antes_placa[m_hora.end() :]
             elif m_data:
                 antes_placa = antes_placa[m_data.end() :]
-            cupons = re.findall(r"\b(\d{5,7})\b", antes_placa)
+            cupons = re.findall(r"(\d{5,7})", antes_placa)
             cupom = cupons[0] if cupons else "0"
 
             j = i + 1
@@ -319,14 +321,14 @@ def _extrair_unico_arquivo(uploaded_file):
                         vlr_unit = nums_validos[0]
 
                     depois_placa = line[m_placa.end() :]
-                    depois_sem_dep = re.sub(r"\bCARRO\s+\d+\b", " ", depois_placa, flags=re.IGNORECASE)
+                    depois_sem_dep = re.sub(r"CARRO\s+\d+", " ", depois_placa, flags=re.IGNORECASE)
 
                     km = ""
                     m_km_ponto = re.search(r"(?<!\d)(\d{1,3}(?:\.\d{3})+)", depois_sem_dep)
                     if m_km_ponto:
                         km = m_km_ponto.group(1).replace(".", "")
                     else:
-                        m_colado = re.search(r"(?<!\d)(\d+,\d{2})\b", depois_sem_dep)
+                        m_colado = re.search(r"(?<!\d)(\d+,\d{2})", depois_sem_dep)
                         if m_colado:
                             bloco_antes_virgula = m_colado.group(1).split(",")[0]
                             qtd_num = limpa_numero(quantidade)
@@ -457,30 +459,42 @@ def criar_driver():
 
 def _filtrar_placa_modal(driver, wait, placa):
     """Abre modal de veículos, seleciona placa (com fallback de 1 caractere) e confirma."""
-    wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles"))).click()
-    input_modal = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class,'selectize-input')]//input")))
+    btn_all = wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_all)
+    btn_all.click()
+    time.sleep(0.3)
+
+    input_modal = wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//div[contains(@class,'selectize-input')]//input"))
+    )
 
     select_filtro = driver.find_elements(By.XPATH, "//select[@ng-model='filter.type']")
     if select_filtro:
-        Select(select_filtro[0]).select_by_visible_text("Placa")
-
-    for rem in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//a[contains(@class,'remove')]"):
         try:
-            rem.click()
+            Select(select_filtro[0]).select_by_visible_text("Placa")
+            time.sleep(0.25)
         except Exception:
             pass
 
-    input_modal.click()
+    for rem in driver.find_elements(By.XPATH, "//div[contains(@class,'selectize-input')]//a[contains(@class,'remove')]"):
+        try:
+            driver.execute_script("arguments[0].click();", rem)
+            time.sleep(0.15)
+        except Exception:
+            pass
+
+    driver.execute_script("arguments[0].focus();", input_modal)
     input_modal.send_keys(Keys.CONTROL + "a")
     input_modal.send_keys(Keys.BACKSPACE)
     input_modal.send_keys(placa)
+    time.sleep(0.45)
 
     xp_opc = (
         f"//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
         f"//div[contains(@class,'option') and contains(.,'{placa}')]"
     )
     try:
-        WebDriverWait(driver, 2.0).until(EC.element_to_be_clickable((By.XPATH, xp_opc)))
+        WebDriverWait(driver, 2.5).until(EC.visibility_of_element_located((By.XPATH, xp_opc)))
     except TimeoutException:
         pass
     opcoes = [el for el in driver.find_elements(By.XPATH, xp_opc) if el.is_displayed()]
@@ -488,15 +502,17 @@ def _filtrar_placa_modal(driver, wait, placa):
 
     if not opcoes and len(placa) == 7:
         sufixo = placa[-4:]
+        driver.execute_script("arguments[0].focus();", input_modal)
         input_modal.send_keys(Keys.CONTROL + "a")
         input_modal.send_keys(Keys.BACKSPACE)
         input_modal.send_keys(sufixo)
+        time.sleep(0.45)
         xp_suf = (
             f"//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
             f"//div[contains(@class,'option') and contains(.,'{sufixo}')]"
         )
         try:
-            WebDriverWait(driver, 1.8).until(EC.element_to_be_clickable((By.XPATH, xp_suf)))
+            WebDriverWait(driver, 2.0).until(EC.visibility_of_element_located((By.XPATH, xp_suf)))
         except TimeoutException:
             pass
         cands = []
@@ -512,22 +528,42 @@ def _filtrar_placa_modal(driver, wait, placa):
             opcoes = [el for p, el in cands if p == placa_real]
 
     if not opcoes:
-        try:
-            driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
-        except Exception:
-            pass
+        for xp_cancel in ("//button[contains(.,'Cancelar')]", "//button[@class='close']"):
+            btns = driver.find_elements(By.XPATH, xp_cancel)
+            if btns:
+                try:
+                    driver.execute_script("arguments[0].click();", btns[0])
+                    break
+                except Exception:
+                    pass
         fechar_alerta_se_existir(driver)
         return None
 
     driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'});", opcoes[0])
-    opcoes[0].click()
+    time.sleep(0.2)
+    try:
+        opcoes[0].click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", opcoes[0])
+    time.sleep(0.25)
+
     try:
         driver.find_element(By.XPATH, "//h5[contains(.,'Filtrar os veículos')]").click()
     except Exception:
-        input_modal.send_keys(Keys.ESCAPE)
+        try:
+            input_modal.send_keys(Keys.ESCAPE)
+        except Exception:
+            pass
+    time.sleep(0.2)
 
-    wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))).click()
-    time.sleep(0.5)
+    btn_conf = wait.until(
+        EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))
+    )
+    try:
+        btn_conf.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", btn_conf)
+    time.sleep(0.65)
     fechar_alerta_se_existir(driver)
     return placa_real
 
@@ -600,7 +636,6 @@ def _parse_data_hora_zuq(texto_dt):
     ):
         try:
             dt = datetime.strptime(s, fmt)
-            # Evita que anos de 2 dígitos distantes como "52" virem 2052 na ordenação cronológica
             if "%y" in fmt and dt.year > datetime.now().year + 2:
                 return None
             return dt
@@ -617,7 +652,10 @@ def _ler_leituras_odometro_ate_data(driver, dt_minima_alvo):
         novas = 0
         dt_mais_antiga_pag = None
         for tr in driver.find_elements(By.XPATH, "//table//tbody//tr"):
-            tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
+            try:
+                tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
+            except StaleElementReferenceException:
+                continue
             if len(tds) < 3:
                 continue
             km_tr = 0
@@ -637,7 +675,7 @@ def _ler_leituras_odometro_ate_data(driver, dt_minima_alvo):
                 chave = (dt_raw, km_tr)
                 if chave not in vistas:
                     vistas.add(chave)
-                    leituras.append((dt_obj, dt_raw, km_tr, tr))
+                    leituras.append((dt_obj, dt_raw, km_tr))
                     novas += 1
 
         if dt_minima_alvo is not None and dt_mais_antiga_pag is not None and dt_mais_antiga_pag < dt_minima_alvo:
@@ -651,15 +689,24 @@ def _ler_leituras_odometro_ate_data(driver, dt_minima_alvo):
             try:
                 primeiro_tr_antes = driver.find_elements(By.XPATH, "//table//tbody//tr[1]")
                 txt_antes = primeiro_tr_antes[0].text if primeiro_tr_antes else ""
-                prox[0].click()
-                WebDriverWait(driver, 3.0).until(
-                    lambda d: (
-                        d.find_elements(By.XPATH, "//table//tbody//tr[1]")[0].text
-                        if d.find_elements(By.XPATH, "//table//tbody//tr[1]")
-                        else ""
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", prox[0])
+                time.sleep(0.2)
+                try:
+                    prox[0].click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", prox[0])
+                time.sleep(0.55)
+                try:
+                    WebDriverWait(driver, 2.5).until(
+                        lambda d: (
+                            d.find_elements(By.XPATH, "//table//tbody//tr[1]")[0].text
+                            if d.find_elements(By.XPATH, "//table//tbody//tr[1]")
+                            else ""
+                        )
+                        != txt_antes
                     )
-                    != txt_antes
-                )
+                except TimeoutException:
+                    pass
                 pagina += 1
                 continue
             except Exception:
@@ -670,50 +717,94 @@ def _ler_leituras_odometro_ate_data(driver, dt_minima_alvo):
     return leituras
 
 
-def _corrigir_medidor_na_linha(driver, wait, linha_tr, novo_km, log_container, rotulo=""):
-    """Abre o menu da linha (fa-bars), clica em 'Corrigir medidores' e salva o novo KM."""
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", linha_tr)
-        btn_menu = linha_tr.find_element(By.XPATH, ".//button[contains(@class,'dropdown-toggle') or .//i[contains(@class,'fa-bars')]]")
-        btn_menu.click()
-
-        link_corrigir = wait.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, ".//a[@ng-click=\"setMeters(e)\" or contains(.,'Corrigir medidores')]")
-            )
-        )
-        link_corrigir.click()
-
-        campo_medidor = wait.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//div[contains(@class,'modal') and contains(@class,'in')]//input[@type='text'] | //input[contains(@class,'form-control') and @type='text']")
-            )
-        )
-        preencher_campo_texto(driver, campo_medidor, str(novo_km))
-
-        btn_corrigir = wait.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Corrigir')]")
-            )
-        )
-        btn_corrigir.click()
-        time.sleep(0.5)
-        fechar_alerta_se_existir(driver)
-        log_container.info(f"🔧 Medidor corrigido para {novo_km} km ({rotulo}).")
-        return True
-    except Exception as e:
-        log_container.warning(f"⚠️ Não foi possível corrigir medidor ({rotulo}): {e}")
+def _localizar_e_corrigir_medidor(driver, wait, dt_raw_alvo, km_atual_alvo, novo_km, log_container, rotulo=""):
+    """Rebusca a linha na tabela atual pelo dt_raw/KM (evitando StaleElement), abre menu e corrige."""
+    for _ in range(2):
         try:
-            driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
-        except Exception:
-            pass
-        return False
+            linhas_atuais = driver.find_elements(By.XPATH, "//table//tbody//tr")
+            linha_alvo = None
+            for tr in linhas_atuais:
+                txt = tr.text or ""
+                if dt_raw_alvo and dt_raw_alvo in txt:
+                    linha_alvo = tr
+                    break
+            if linha_alvo is None and km_atual_alvo:
+                km_fmt = f"{int(km_atual_alvo):,}".replace(",", ".")
+                for tr in linhas_atuais:
+                    txt = tr.text or ""
+                    if km_fmt in txt or str(km_atual_alvo) in re.sub(r"\D", "", txt):
+                        linha_alvo = tr
+                        break
+            if linha_alvo is None:
+                return False
+
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", linha_alvo)
+            time.sleep(0.25)
+
+            btn_menu = linha_alvo.find_element(
+                By.XPATH, ".//button[contains(@class,'dropdown-toggle') or .//i[contains(@class,'fa-bars')]]"
+            )
+            try:
+                btn_menu.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", btn_menu)
+            time.sleep(0.35)
+
+            link_corrigir = wait.until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, "//ul[contains(@class,'dropdown-menu') and ancestor::*[contains(@class,'open')]]//a[@ng-click="setMeters(e)" or contains(.,'Corrigir medidores')] | //a[@ng-click="setMeters(e)" or contains(.,'Corrigir medidores')]")
+                )
+            )
+            try:
+                link_corrigir.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", link_corrigir)
+            time.sleep(0.35)
+
+            campo_medidor = wait.until(
+                EC.visibility_of_element_located(
+                    (By.XPATH, "//div[contains(@class,'modal') and contains(@class,'in')]//input[@type='text'] | //input[contains(@class,'form-control') and @type='text']")
+                )
+            )
+            preencher_campo_texto(driver, campo_medidor, str(novo_km))
+            time.sleep(0.25)
+
+            btn_corrigir = wait.until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Corrigir')]")
+                )
+            )
+            try:
+                btn_corrigir.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", btn_corrigir)
+            time.sleep(0.55)
+            fechar_alerta_se_existir(driver)
+            log_container.info(f"🔧 Medidor corrigido para {novo_km} km ({rotulo}).")
+            return True
+        except StaleElementReferenceException:
+            time.sleep(0.2)
+            continue
+        except Exception as e:
+            msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
+            log_container.warning(f"⚠️ Não foi possível corrigir medidor ({rotulo}): {msg_curta}")
+            for xp_cancel in ("//button[contains(.,'Cancelar')]", "//button[@class='close']"):
+                btns = driver.find_elements(By.XPATH, xp_cancel)
+                if btns:
+                    try:
+                        driver.execute_script("arguments[0].click();", btns[0])
+                        break
+                    except Exception:
+                        pass
+            return False
+    return False
 
 
 def conferir_e_corrigir_hodometro(df, base_url, driver, wait, log_container, progress_bar):
     log_container.info("🩺 Conferindo e corrigindo KM no hodômetro do ZUQ...")
     navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=12)
     wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
+    time.sleep(0.4)
 
     df_ord = _ordenar_df(df)
     dt_min_por_placa = {}
@@ -745,7 +836,9 @@ def conferir_e_corrigir_hodometro(df, base_url, driver, wait, log_container, pro
                 placas_corrigidas[placa] = placa_real
 
             leituras = _ler_leituras_odometro_ate_data(driver, dt_min_por_placa.get(placa))
-            linhas_placa = df_ord[df_ord["placa"].astype(str).str.upper().str.replace("-", "", regex=False).str.strip() == placa]
+            linhas_placa = df_ord[
+                df_ord["placa"].astype(str).str.upper().str.replace("-", "", regex=False).str.strip() == placa
+            ]
 
             for _, row in linhas_placa.iterrows():
                 data_s = str(row["data"]).strip()
@@ -755,23 +848,28 @@ def conferir_e_corrigir_hodometro(df, base_url, driver, wait, log_container, pro
                 if km_arq == 0 or dt_arq is None:
                     continue
 
-                # Verifica se existe leitura posterior com KM menor que o KM do arquivo
-                # ou leitura anterior com KM maior que o KM do arquivo
-                for dt_l, dt_raw, km_l, tr_el in leituras:
+                for dt_l, dt_raw, km_l in leituras:
                     if dt_l > dt_arq and km_l < km_arq:
-                        if _corrigir_medidor_na_linha(
-                            driver, wait, tr_el, km_arq, log_container, rotulo=f"{placa_real} {dt_raw}"
+                        # Re-filtra a placa para voltar à página inicial da tabela antes de localizar e corrigir
+                        _filtrar_placa_modal(driver, wait, placa_real)
+                        if _localizar_e_corrigir_medidor(
+                            driver, wait, dt_raw, km_l, km_arq, log_container, rotulo=f"{placa_real} {dt_raw}"
                         ):
                             corrigidos_count += 1
-                            # Re-lê para manter referência atualizada após correção
+                            _filtrar_placa_modal(driver, wait, placa_real)
                             leituras = _ler_leituras_odometro_ate_data(driver, dt_min_por_placa.get(placa))
                             break
         except Exception as e:
-            log_container.warning(f"⚠️ Falha no hodômetro de {placa}: {e}")
-            try:
-                driver.find_element(By.XPATH, "//button[contains(.,'Cancelar')]").click()
-            except Exception:
-                pass
+            msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
+            log_container.warning(f"⚠️ Falha no hodômetro de {placa} ({type(e).__name__}): {msg_curta}")
+            for xp_cancel in ("//button[contains(.,'Cancelar')]", "//button[@class='close']"):
+                btns = driver.find_elements(By.XPATH, xp_cancel)
+                if btns:
+                    try:
+                        driver.execute_script("arguments[0].click();", btns[0])
+                        break
+                    except Exception:
+                        pass
 
     log_container.info(f"✅ Hodômetro conferido ({corrigidos_count} medidor(es) corrigido(s)). Fazendo entrada...")
     return placas_ausentes, placas_corrigidas
@@ -789,6 +887,7 @@ def conciliar_ou_criar_registro(
 
         if precisa_filtrar:
             navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12)
+            time.sleep(0.35)
             placa_real = _filtrar_placa_modal(driver, wait, placa)
             if not placa_real:
                 log_container.warning(f"🚨 Placa {placa} não encontrada no ZUQ.")
@@ -873,7 +972,8 @@ def conciliar_ou_criar_registro(
 
     except Exception as e:
         fechar_alerta_se_existir(driver)
-        log_container.error(f"❌ Erro ao conciliar {placa} ({data}): {e}")
+        msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
+        log_container.error(f"❌ Erro ao conciliar {placa} ({data}) [{type(e).__name__}]: {msg_curta}")
         return "ERRO", ""
 
 
@@ -886,7 +986,9 @@ class LogSimples:
     def _add(self, msg):
         self._linhas.append(msg)
         self.h[:] = self._linhas[-30:]
-        self._ph.markdown("\n\n".join(self.h))
+        self._ph.markdown("
+
+".join(self.h))
 
     def info(self, m):
         self._add(m)
@@ -1004,11 +1106,14 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             ultima_placa_filtrada = ""
             try:
                 navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel/new", timeout=10)
+                time.sleep(0.35)
                 wait.until(EC.element_to_be_clickable((By.XPATH, XP_VEICULO))).click()
+                time.sleep(0.25)
                 inp = driver.find_element(By.XPATH, XP_VEICULO + "//input")
                 inp.send_keys(Keys.CONTROL + "a")
                 inp.send_keys(Keys.BACKSPACE)
                 inp.send_keys(placa_str)
+                time.sleep(0.45)
 
                 xp_opc_v = (
                     f"//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
@@ -1018,19 +1123,28 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 opcoes_v = [el for el in driver.find_elements(By.XPATH, xp_opc_v) if el.is_displayed()]
                 if not opcoes_v:
                     raise RuntimeError(f"Veículo {placa_str} não apareceu no dropdown")
-                opcoes_v[0].click()
+                try:
+                    opcoes_v[0].click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", opcoes_v[0])
+                time.sleep(0.25)
 
                 data_iso = datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
                 set_angular_value(driver, driver.find_element(By.ID, "fuelDate"), data_iso)
+                time.sleep(0.15)
 
                 campo_hora = driver.find_element(By.ID, "additionTime")
                 preencher_campo_texto(driver, campo_hora, hora_str[:5])
+                time.sleep(0.15)
 
                 preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_LITROS), litros_str)
+                time.sleep(0.15)
                 preencher_campo_texto(driver, driver.find_element(By.NAME, "price"), preco_str)
+                time.sleep(0.15)
 
                 if km_str and km_str != "0":
                     preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_KM), km_str)
+                    time.sleep(0.15)
 
                 # Combustível
                 prod_str = str(row.get("produto", "DIESEL")).strip().upper()
@@ -1071,15 +1185,18 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                         if escolhido:
                             sel_obj.select_by_visible_text(escolhido)
                             set_angular_value(driver, sel_el, sel_el.get_attribute("value") or "")
+                            time.sleep(0.2)
 
                 # Fornecedor
                 if FORNECEDOR.strip():
                     el_forn = wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR)))
                     el_forn.click()
+                    time.sleep(0.25)
                     inp_f = el_forn.find_element(By.XPATH, ".//input")
                     inp_f.send_keys(Keys.CONTROL + "a")
                     inp_f.send_keys(Keys.BACKSPACE)
                     inp_f.send_keys(FORNECEDOR)
+                    time.sleep(0.45)
                     xp_opc_forn = (
                         "//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
                         "//div[contains(@class,'option')]"
@@ -1090,11 +1207,16 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                         pass
                     opcoes_f = [el for el in driver.find_elements(By.XPATH, xp_opc_forn) if el.is_displayed()]
                     if opcoes_f:
-                        opcoes_f[0].click()
+                        try:
+                            opcoes_f[0].click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", opcoes_f[0])
                     else:
                         inp_f.send_keys(Keys.ENTER)
+                    time.sleep(0.25)
 
                 preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_DOC), cupom_str)
+                time.sleep(0.15)
 
                 salvou, km_removido = salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=True)
                 if salvou and km_removido:
@@ -1107,7 +1229,8 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     log_container.error(f"❌ Falha ao salvar {placa_str} ({data_str}).")
                     contadores["erros"] += 1
             except Exception as e_c:
-                log_container.error(f"❌ Erro ao lançar {placa_str} ({data_str}): {e_c}")
+                msg_curta = str(e_c).splitlines()[0] if str(e_c) else type(e_c).__name__
+                log_container.error(f"❌ Erro ao lançar {placa_str} ({data_str}) [{type(e_c).__name__}]: {msg_curta}")
                 contadores["erros"] += 1
 
             atualizar_kpis()
@@ -1116,7 +1239,8 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         progress_bar.progress(1.0, text=f"Concluído em {time.time() - t0:.0f}s!")
         log_container.success(f"🎉 Finalizado em {time.time() - t0:.0f} segundos!")
     except Exception as e:
-        log_container.error(f"❌ Erro geral: {e}")
+        msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
+        log_container.error(f"❌ Erro geral [{type(e).__name__}]: {msg_curta}")
     finally:
         try:
             driver.quit()
@@ -1207,7 +1331,9 @@ if verificar_senha():
         progress_bar = st.progress(0, text="Pronto para iniciar")
         log_box = st.container(height=230, border=True)
         if not btn_iniciar and st.session_state.get("log_simples"):
-            log_box.markdown("\n\n".join(st.session_state["log_simples"]))
+            log_box.markdown("
+
+".join(st.session_state["log_simples"]))
 
         if btn_iniciar:
             if os.path.exists(stop_flag_path):
