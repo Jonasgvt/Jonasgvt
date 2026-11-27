@@ -846,6 +846,14 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 atualizar_kpis()
                 continue
 
+            # Divergência de KM com o hodômetro do ZUQ: segue sem KM (lançamento e edição) e avisa.
+            if em_conflito_km and km_str and km_str != "0":
+                log_container.warning(
+                    f"⚠️ KM DIVERGENTE — {placa_str} ({data_str} {hora_str}): KM do arquivo {km_str} "
+                    f"conflita com o hodômetro do ZUQ. Processando SEM o KM."
+                )
+                km_str = ""
+
             placa_orig = placa_str
             if placa_str in placas_mapeadas:
                 placa_str = placas_mapeadas[placa_str]
@@ -907,7 +915,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 set_js(driver, driver.find_element(By.XPATH, XP_LITROS), litros_str)
                 set_js(driver, driver.find_element(By.NAME, "price"), preco_str)
 
-                if km_str and km_str != "0" and not em_conflito_km:
+                if km_str and km_str != "0":
                     preencher_campo_angular(driver, driver.find_element(By.XPATH, XP_KM), km_str)
 
                 # Combustível
