@@ -247,11 +247,9 @@ def _extrair_unico_arquivo(uploaded_file):
             for page in reader.pages:
                 texto_pag = page.extract_text()
                 if texto_pag:
-                    lines.extend(texto_pag.split("
-"))
+                    lines.extend(texto_pag.splitlines())
         else:
-            lines = file_bytes.decode("latin1", errors="ignore").split("
-")
+            lines = file_bytes.decode("latin1", errors="ignore").splitlines()
     except Exception as e:
         st.error(f"❌ Erro ao ler {nome_orig}: {e}")
         return pd.DataFrame()
@@ -273,7 +271,7 @@ def _extrair_unico_arquivo(uploaded_file):
         m_data = re.search(r"(\d{2}/\d{2}/\d{2,4})", line)
 
         if m_placa and m_data:
-            placa = m_placa.group(1).replace("-", "")
+            placa = re.sub(r"[^A-Z0-9]", "", m_placa.group(1).upper())
             dt_str = m_data.group(1)
             partes_dt = dt_str.split("/")
             if len(partes_dt[2]) == 2:
@@ -287,8 +285,16 @@ def _extrair_unico_arquivo(uploaded_file):
                 antes_placa = antes_placa[m_hora.end() :]
             elif m_data:
                 antes_placa = antes_placa[m_data.end() :]
-            cupons = re.findall(r"(\d{5,7})", antes_placa)
+            cupons = re.findall(r"(?<!\d)(\d{5,7})(?!\d)", antes_placa)
             cupom = cupons[0] if cupons else "0"
+
+            depois_placa = line[m_placa.end() :]
+            depois_sem_dep = re.sub(r"\bCARRO\s+\d+\b", " ", depois_placa, flags=re.IGNORECASE)
+
+            km = ""
+            m_km_ponto = re.search(r"(?<!\d)(\d{1,3}(?:\.\d{3})+)", depois_sem_dep)
+            if m_km_ponto:
+                km = m_km_ponto.group(1).replace(".", "")
 
             j = i + 1
             while j < len(lines):
@@ -320,15 +326,8 @@ def _extrair_unico_arquivo(uploaded_file):
                     elif len(nums_validos) == 1:
                         vlr_unit = nums_validos[0]
 
-                    depois_placa = line[m_placa.end() :]
-                    depois_sem_dep = re.sub(r"CARRO\s+\d+", " ", depois_placa, flags=re.IGNORECASE)
-
-                    km = ""
-                    m_km_ponto = re.search(r"(?<!\d)(\d{1,3}(?:\.\d{3})+)", depois_sem_dep)
-                    if m_km_ponto:
-                        km = m_km_ponto.group(1).replace(".", "")
-                    else:
-                        m_colado = re.search(r"(?<!\d)(\d+,\d{2})", depois_sem_dep)
+                    if not km:
+                        m_colado = re.search(r"(?<!\d)(\d+,\d{2})\b", depois_sem_dep)
                         if m_colado:
                             bloco_antes_virgula = m_colado.group(1).split(",")[0]
                             qtd_num = limpa_numero(quantidade)
@@ -752,7 +751,10 @@ def _localizar_e_corrigir_medidor(driver, wait, dt_raw_alvo, km_atual_alvo, novo
 
             link_corrigir = wait.until(
                 EC.element_to_be_clickable(
-                    (By.XPATH, "//ul[contains(@class,'dropdown-menu') and ancestor::*[contains(@class,'open')]]//a[@ng-click="setMeters(e)" or contains(.,'Corrigir medidores')] | //a[@ng-click="setMeters(e)" or contains(.,'Corrigir medidores')]")
+                    (
+                        By.XPATH,
+                        "//ul[contains(@class,'dropdown-menu') and ancestor::*[contains(@class,'open')]]//a[@ng-click='setMeters(e)' or contains(.,'Corrigir medidores')] | //a[@ng-click='setMeters(e)' or contains(.,'Corrigir medidores')]",
+                    )
                 )
             )
             try:
@@ -763,7 +765,10 @@ def _localizar_e_corrigir_medidor(driver, wait, dt_raw_alvo, km_atual_alvo, novo
 
             campo_medidor = wait.until(
                 EC.visibility_of_element_located(
-                    (By.XPATH, "//div[contains(@class,'modal') and contains(@class,'in')]//input[@type='text'] | //input[contains(@class,'form-control') and @type='text']")
+                    (
+                        By.XPATH,
+                        "//div[contains(@class,'modal') and contains(@class,'in')]//input[@type='text'] | //input[contains(@class,'form-control') and @type='text']",
+                    )
                 )
             )
             preencher_campo_texto(driver, campo_medidor, str(novo_km))
@@ -848,9 +853,9 @@ def conferir_e_corrigir_hodometro(df, base_url, driver, wait, log_container, pro
                 if km_arq == 0 or dt_arq is None:
                     continue
 
-                for dt_l, dt_raw, km_l in leituras:
-                    if dt_l > dt_arq and km_l < km_arq:
-                        # Re-filtra a placa para voltar à página inicial da tabela antes de localizar e corrigir
+                for _, dt_raw, km_l in leituras:
+                    dt_l_obj = _parse_data_hora_zuq(dt_raw)
+                    if dt_l_obj is not None and dt_l_obj > dt_arq and km_l < km_arq:
                         _filtrar_placa_modal(driver, wait, placa_real)
                         if _localizar_e_corrigir_medidor(
                             driver, wait, dt_raw, km_l, km_arq, log_container, rotulo=f"{placa_real} {dt_raw}"
@@ -940,7 +945,10 @@ def conciliar_ou_criar_registro(
 
         wait.until(
             EC.element_to_be_clickable(
-                (By.XPATH, "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]")
+                (
+                    By.XPATH,
+                    "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]",
+                )
             )
         ).click()
         wait.until(EC.presence_of_element_located((By.NAME, "price")))
@@ -986,9 +994,7 @@ class LogSimples:
     def _add(self, msg):
         self._linhas.append(msg)
         self.h[:] = self._linhas[-30:]
-        self._ph.markdown("
-
-".join(self.h))
+        self._ph.markdown("\n".join(self.h))
 
     def info(self, m):
         self._add(m)
@@ -1059,11 +1065,11 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
             placa_str = re.sub(r"[^A-Z0-9]", "", str(row["placa"]).upper())
             km_str = re.sub(r"\D", "", str(row["km"])) if pd.notna(row["km"]) else ""
-            cupom_str = str(row["cupom"]) if pd.notna(row.get("cupom")) else "0"
-            hora_str = str(row["hora"]) if pd.notna(row.get("hora")) else "08:00:00"
+            cupom_str = str(row["cupom"]).strip() if pd.notna(row.get("cupom")) and str(row.get("cupom")).strip() else "0"
+            hora_str = str(row["hora"]).strip() if pd.notna(row.get("hora")) and str(row.get("hora")).strip() else "08:00:00"
             data_str = str(row["data"]).strip()
-            litros_str = str(row["quantidade"])
-            preco_str = str(row["valor_unitario"])
+            litros_str = str(row["quantidade"]).strip()
+            preco_str = str(row["valor_unitario"]).strip()
 
             if not placa_str or not data_str or "❌" in str(row.get("status", "")) or placa_str in placas_inexistentes:
                 log_container.warning(f"⏭️ Pulando {placa_str or '?'} ({data_str or '?'}) por status/placa inválida.")
@@ -1076,8 +1082,16 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 placa_str = placas_mapeadas[placa_str]
 
             acao, ultima_placa_filtrada = conciliar_ou_criar_registro(
-                driver, wait, base_url, placa_str, data_str, km_str, litros_str, preco_str,
-                ultima_placa_filtrada, log_container
+                driver,
+                wait,
+                base_url,
+                placa_str,
+                data_str,
+                km_str,
+                litros_str,
+                preco_str,
+                ultima_placa_filtrada,
+                log_container,
             )
 
             if acao == "NAO_ENCONTRADA":
@@ -1161,7 +1175,10 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
                 sel_el = wait.until(
                     EC.presence_of_element_located(
-                        (By.XPATH, "//select[@ng-model='fuel.payable.id'] | //label[contains(.,'Combustível')]/following::select[1]")
+                        (
+                            By.XPATH,
+                            "//select[@ng-model='fuel.payable.id'] | //label[contains(.,'Combustível')]/following::select[1]",
+                        )
                     )
                 )
                 if sel_el.get_attribute("disabled") is None and sel_el.is_enabled():
@@ -1246,6 +1263,11 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             driver.quit()
         except Exception:
             pass
+        if stop_flag_path and os.path.exists(stop_flag_path):
+            try:
+                os.remove(stop_flag_path)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------
@@ -1331,9 +1353,7 @@ if verificar_senha():
         progress_bar = st.progress(0, text="Pronto para iniciar")
         log_box = st.container(height=230, border=True)
         if not btn_iniciar and st.session_state.get("log_simples"):
-            log_box.markdown("
-
-".join(st.session_state["log_simples"]))
+            log_box.markdown("\n".join(st.session_state["log_simples"]))
 
         if btn_iniciar:
             if os.path.exists(stop_flag_path):
@@ -1355,6 +1375,13 @@ if verificar_senha():
                 st.session_state["log_simples"] = []
                 log_s = LogSimples(log_box, st.session_state["log_simples"])
                 lancar_no_zuq(
-                    df_proc, url_zuq, usuario_zuq, senha_zuq,
-                    fornecedor_zuq, log_s, progress_bar, ui, stop_flag_path
+                    df_proc,
+                    url_zuq,
+                    usuario_zuq,
+                    senha_zuq,
+                    fornecedor_zuq,
+                    log_s,
+                    progress_bar,
+                    ui,
+                    stop_flag_path,
                 )
