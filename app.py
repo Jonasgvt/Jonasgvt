@@ -29,6 +29,7 @@ from selenium.common.exceptions import (
 # ---------------------------------------------------------
 PRECO_MIN, PRECO_MAX = 3.0, 15.0      # faixa plausível de R$/L
 LITROS_MAX = 600.0                    # volume atípico por abastecimento
+KM_MAX_PLAUSIVEL = 1_500_000          # acima disto indica provável dígito extra no posto
 TOL_TOTAL = 0.02                      # tolerância litros x preço vs total (2%)
 MAX_TENTATIVAS_LOGIN = 5
 BLOQUEIO_SEGUNDOS = 60
@@ -280,7 +281,7 @@ def verificar_senha():
 # UTILITÁRIOS
 # ---------------------------------------------------------
 def digitar_selectize(elemento, texto):
-    """Envia o texto de uma vez e dispara keyup/input para o Selectize abrir o dropdown sem atraso."""
+    """Envia o texto de uma vez para o Selectize abrir o dropdown sem atraso."""
     elemento.send_keys(str(texto))
 
 
@@ -540,6 +541,8 @@ def auditar_e_validar_dados(df):
 
         if km_val == 0:
             alertas.append("⚠️ KM Ausente")
+        elif km_val > KM_MAX_PLAUSIVEL:
+            alertas.append(f"⚠️ KM muito alto ({int(km_val):,}) — possível dígito extra no posto".replace(",", "."))
         if preco == 0:
             alertas.append("❌ Preço zerado")
         elif not (PRECO_MIN <= preco <= PRECO_MAX):
@@ -608,7 +611,7 @@ def gerar_resumo_executivo_frota(df):
     linhas_placa = []
     for placa, grp in tmp.groupby("placa", sort=True):
         grp_ord = grp.sort_values(["_dt", "hora"])
-        kms_validos = grp_ord.loc[grp_ord["_km"] > 0, "_km"]
+        kms_validos = grp_ord.loc[(grp_ord["_km"] > 0) & (grp_ord["_km"] <= KM_MAX_PLAUSIVEL), "_km"]
         km_ini = float(kms_validos.iloc[0]) if len(kms_validos) >= 1 else 0.0
         km_fim = float(kms_validos.iloc[-1]) if len(kms_validos) >= 1 else 0.0
         km_rodado = max(0.0, km_fim - km_ini) if len(kms_validos) >= 2 else 0.0
@@ -693,7 +696,7 @@ def criar_driver():
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--window-size=1920,1080",
-        "--blink-settings=imagesEnabled=false",  # reduz RAM e acelera renderização
+        "--blink-settings=imagesEnabled=false",
     ):
         options.add_argument(arg)
 
@@ -1063,7 +1066,7 @@ class LogPersistente:
 
 
 # ---------------------------------------------------------
-# PRÉ-ANÁLISE DE HODÔMETRO COM CORTE INTELIGENTE DE PAGINAÇÃO
+# PRÉ-ANÁLISE DE HODÔMETRO COM PARSER COMPLETO DE MILHAR
 # ---------------------------------------------------------
 def _parse_data_hora_zuq(texto_dt):
     if not texto_dt:
@@ -1075,6 +1078,21 @@ def _parse_data_hora_zuq(texto_dt):
         except ValueError:
             continue
     return None
+
+
+def _extrair_km_linha_odometro(texto_linha):
+    """
+    Extrai o valor completo de quilometragem antes de 'km' (ex.: '23.082 km' ou '23 082 km' -> 23082),
+    evitando capturar apenas os 3 últimos dígitos após o separador de milhar.
+    """
+    if not texto_linha:
+        return 0
+    txt_norm = re.sub(r'\s+', ' ', str(texto_linha)).strip()
+    m = re.search(r'(?<![\d\.,])(\d{1,3}(?:[\.\s]\d{3})+|\d+)\s*km\b', txt_norm, flags=re.IGNORECASE)
+    if not m:
+        return 0
+    digitos = re.sub(r'\D', '', m.group(1))
+    return int(digitos) if digitos else 0
 
 
 def _ler_leituras_odometro_zuq(driver, data_corte_min=None):
@@ -1093,17 +1111,19 @@ def _ler_leituras_odometro_zuq(driver, data_corte_min=None):
             if len(tds) < 4:
                 continue
             origem_txt = f"{tds[0]} {tds[1]}".strip()
-            km_tr = 0
+            linha_completa = " | ".join(tds)
+            km_tr = _extrair_km_linha_odometro(linha_completa)
+
             dt_obj = None
             dt_raw = ""
             for cel in tds:
-                m_km_cel = re.search(r'([\d\.]+)\s*km', cel, flags=re.IGNORECASE)
-                if m_km_cel:
-                    km_tr = int(re.sub(r'\D', '', m_km_cel.group(1)) or 0)
                 m_dt_cel = re.search(r'(\d{2}/\d{2}/\d{2,4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)', cel)
                 if m_dt_cel:
                     dt_raw = m_dt_cel.group(1)
                     dt_obj = _parse_data_hora_zuq(dt_raw)
+                    if dt_obj is not None:
+                        break
+
             if km_tr > 0 and dt_obj is not None:
                 chave = (dt_raw, km_tr, origem_txt)
                 if chave not in vistas:
@@ -1185,7 +1205,6 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
         ))
         cache_odo_placa = {}
 
-        # Calcula data mínima por placa no lote (com margem de 15 dias) para interromper paginação antiga
         datas_lote = pd.to_datetime(df_ord['data'].astype(str).str.strip(), format='%d/%m/%Y', errors='coerce')
         placas_norm_s = df_ord['placa'].astype(str).str.upper().str.replace(r'[^A-Z0-9]', '', regex=True)
 
@@ -1271,6 +1290,8 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
 
             if km_arq == 0:
                 diag = "⚠️ KM ausente no ficheiro"
+            elif km_arq > KM_MAX_PLAUSIVEL:
+                diag = f"❌ Conflito: KM muito alto ({km_arq}) — possível dígito extra no posto"
             elif leitura_mesma_data is not None and leitura_mesma_data[2] == km_arq:
                 diag = "✅ KM bate exato na data/hora"
             elif leitura_mesma_data is not None and leitura_mesma_data[2] != km_arq:
@@ -1286,7 +1307,7 @@ def executar_checkup_km_zuq(df, URL_ZUQ, USUARIO, SENHA, log_container, progress
             else:
                 diag = "✅ KM coerente na linha do tempo"
 
-            if km_arq > 0 and dt_arq is not None:
+            if 0 < km_arq <= KM_MAX_PLAUSIVEL and dt_arq is not None:
                 ultimo_lote_dt_km[placa] = (dt_arq, km_arq)
 
             resultados.append({
@@ -1914,7 +1935,6 @@ if verificar_senha():
         pular_criticos = st.checkbox("Ignorar linhas com erro crítico (❌) na auditoria", value=True)
         simular = st.checkbox("🧪 Modo simulação (analisa e mostra o que faria, sem salvar nada no ZUQ)", value=True)
 
-        # Arquivo de parada isolado por sessão do utilizador
         stop_flag_path = os.path.join(tempfile.gettempdir(), f"zuq_stop_{st.session_state['session_uid']}.flag")
 
         btn_checkup_km = st.button(
