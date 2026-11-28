@@ -404,12 +404,44 @@ def fechar_alerta_se_existir(driver):
         return False
 
 
-def navegar_rapido(driver, url, timeout=12):
+def limpar_sobreposicoes(driver):
+    """Remove ou aguarda sumir backdrops/loaders que interceptam cliques no ZUQ."""
+    try:
+        driver.execute_script(
+            """
+            document.querySelectorAll('.modal-backdrop, .blockUI, .blockOverlay, .ngx-overlay').forEach(el => {
+                if (el && el.parentNode) el.remove();
+            });
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = 'auto';
+            document.body.style.paddingRight = '0px';
+            """
+        )
+    except Exception:
+        pass
+
+
+def clicar_seguro(driver, elemento):
+    limpar_sobreposicoes(driver)
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elemento)
+    except Exception:
+        pass
+    try:
+        elemento.click()
+    except Exception:
+        limpar_sobreposicoes(driver)
+        driver.execute_script("arguments[0].click();", elemento)
+
+
+def navegar_rapido(driver, url, timeout=20):
     driver.set_page_load_timeout(timeout)
     try:
         driver.get(url)
     except TimeoutException:
         driver.execute_script("window.stop();")
+    time.sleep(0.4)
+    limpar_sobreposicoes(driver)
 
 
 def executar_com_retry(func, max_tentativas=3, intervalo_base=1.0):
@@ -452,16 +484,16 @@ def criar_driver():
         driver = webdriver.Chrome(service=service, options=options)
     except Exception:
         driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(12)
+    driver.set_page_load_timeout(20)
     return driver
 
 
 def _filtrar_placa_modal(driver, wait, placa):
     """Abre modal de veículos, seleciona placa (com fallback de 1 caractere) e confirma."""
-    btn_all = wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_all)
-    btn_all.click()
-    time.sleep(0.3)
+    limpar_sobreposicoes(driver)
+    btn_all = wait.until(EC.presence_of_element_located((By.ID, "btn-allvehicles")))
+    clicar_seguro(driver, btn_all)
+    time.sleep(0.35)
 
     input_modal = wait.until(
         EC.visibility_of_element_located((By.XPATH, "//div[contains(@class,'selectize-input')]//input"))
@@ -486,14 +518,14 @@ def _filtrar_placa_modal(driver, wait, placa):
     input_modal.send_keys(Keys.CONTROL + "a")
     input_modal.send_keys(Keys.BACKSPACE)
     input_modal.send_keys(placa)
-    time.sleep(0.45)
+    time.sleep(0.5)
 
     xp_opc = (
         f"//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
         f"//div[contains(@class,'option') and contains(.,'{placa}')]"
     )
     try:
-        WebDriverWait(driver, 2.5).until(EC.visibility_of_element_located((By.XPATH, xp_opc)))
+        WebDriverWait(driver, 3.0).until(EC.visibility_of_element_located((By.XPATH, xp_opc)))
     except TimeoutException:
         pass
     opcoes = [el for el in driver.find_elements(By.XPATH, xp_opc) if el.is_displayed()]
@@ -505,13 +537,13 @@ def _filtrar_placa_modal(driver, wait, placa):
         input_modal.send_keys(Keys.CONTROL + "a")
         input_modal.send_keys(Keys.BACKSPACE)
         input_modal.send_keys(sufixo)
-        time.sleep(0.45)
+        time.sleep(0.5)
         xp_suf = (
             f"//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
             f"//div[contains(@class,'option') and contains(.,'{sufixo}')]"
         )
         try:
-            WebDriverWait(driver, 2.0).until(EC.visibility_of_element_located((By.XPATH, xp_suf)))
+            WebDriverWait(driver, 2.5).until(EC.visibility_of_element_located((By.XPATH, xp_suf)))
         except TimeoutException:
             pass
         cands = []
@@ -536,14 +568,10 @@ def _filtrar_placa_modal(driver, wait, placa):
                 except Exception:
                     pass
         fechar_alerta_se_existir(driver)
+        limpar_sobreposicoes(driver)
         return None
 
-    driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'});", opcoes[0])
-    time.sleep(0.2)
-    try:
-        opcoes[0].click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", opcoes[0])
+    clicar_seguro(driver, opcoes[0])
     time.sleep(0.25)
 
     try:
@@ -556,14 +584,12 @@ def _filtrar_placa_modal(driver, wait, placa):
     time.sleep(0.2)
 
     btn_conf = wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))
+        EC.presence_of_element_located((By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Confirmar')]"))
     )
-    try:
-        btn_conf.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", btn_conf)
-    time.sleep(0.65)
+    clicar_seguro(driver, btn_conf)
+    time.sleep(0.75)
     fechar_alerta_se_existir(driver)
+    limpar_sobreposicoes(driver)
     return placa_real
 
 
@@ -575,7 +601,7 @@ def _limpar_campo_km_angular(driver):
     set_angular_value(driver, campo_km, "")
 
 
-def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=2.5):
+def _aguardar_resposta_save(driver, sair_do_novo=False, timeout=3.0):
     limite = time.time() + timeout
     while time.time() < limite:
         if sair_do_novo and "/fuel/new" not in driver.current_url:
@@ -594,9 +620,9 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
     """Retorna (salvou, km_removido)."""
     for xpath in ["//*[contains(@class,'btn') and contains(.,'Salvar')]", "//button[contains(.,'Salvar')]"]:
         try:
-            btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-            btn.click()
-            _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=2.5)
+            btn = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
+            clicar_seguro(driver, btn)
+            _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=3.0)
 
             km_removido = False
             erros_km = driver.find_elements(
@@ -606,9 +632,9 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
                 log_container.warning("⚠️ Conflito de KM no ZUQ — salvando sem KM...")
                 _limpar_campo_km_angular(driver)
                 km_removido = True
-                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                btn.click()
-                _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=2.5)
+                btn = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
+                clicar_seguro(driver, btn)
+                _aguardar_resposta_save(driver, sair_do_novo=exigir_sair_do_novo, timeout=3.0)
 
             if exigir_sair_do_novo and "/fuel/new" in driver.current_url:
                 return False, km_removido
@@ -624,103 +650,109 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
 def conciliar_ou_criar_registro(
     driver, wait, base_url, placa, data, km, litros, preco, ultima_placa_filtrada, log_container
 ):
-    try:
-        url_atual = driver.current_url.rstrip("/")
-        precisa_filtrar = (placa != ultima_placa_filtrada) or (not url_atual.endswith("#/fuel"))
-
-        if precisa_filtrar:
-            navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=12)
-            time.sleep(0.35)
-            placa_real = _filtrar_placa_modal(driver, wait, placa)
-            if not placa_real:
-                log_container.warning(f"🚨 Placa {placa} não encontrada no ZUQ.")
-                return "NAO_ENCONTRADA", ""
-            placa = placa_real
-
-        target_litros = limpa_numero(litros)
-        target_preco = limpa_numero(preco)
-        target_km = re.sub(r"\D", "", str(km)) if km else ""
-
-        candidatos = []
-        for linha in driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]"):
-            texto = linha.text
-            if not texto or not data_no_texto(texto, data):
-                continue
-            tds = linha.find_elements(By.TAG_NAME, "td")
-            nums = [limpa_numero(td.text) for td in tds if limpa_numero(td.text) > 0]
-            l_ok = target_litros > 0 and any(abs(n - target_litros) < 0.1 for n in nums)
-            p_ok = target_preco > 0 and any(abs(n - target_preco) < 0.05 for n in nums)
-            k_ok = bool(target_km) and any(re.sub(r"\D", "", td.text) == target_km for td in tds)
-            candidatos.append((int(l_ok) + int(p_ok) + int(k_ok), linha, l_ok, p_ok, k_ok))
-
-        candidatos.sort(key=lambda c: c[0], reverse=True)
-        if not candidatos or candidatos[0][0] == 0:
-            return "CRIAR", placa
-
-        melhor_score, linha_encontrada, l_ok, p_ok, k_ok = candidatos[0]
-        if melhor_score == 1 and len(candidatos) > 1:
-            log_container.warning(f"⚠️ Ambíguo em {placa} ({data}) — pulando para conferência manual.")
-            return "ERRO", placa
-
-        tds_texto = [td.text.strip() for td in linha_encontrada.find_elements(By.TAG_NAME, "td")]
-        tem_zerado = any(t in ("0,00", "0.00") for t in tds_texto)
-        precisa_editar = (
-            (target_km and not k_ok)
-            or (target_preco > 0 and not p_ok)
-            or (target_litros > 0 and not l_ok)
-            or tem_zerado
-        )
-
-        if not precisa_editar:
-            log_container.info(f"✅ {placa} ({data}) já lançado e correto.")
-            return "OK", placa
-
+    for tentativa in range(2):
         try:
-            link = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
-            navegar_rapido(driver, link.get_attribute("href"), timeout=12)
-        except Exception:
-            linha_encontrada.click()
+            url_atual = driver.current_url.rstrip("/")
+            precisa_filtrar = (placa != ultima_placa_filtrada) or (not url_atual.endswith("#/fuel")) or (tentativa > 0)
 
-        wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.XPATH,
-                    "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]",
+            if precisa_filtrar:
+                navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=20)
+                wait.until(EC.presence_of_element_located((By.ID, "btn-allvehicles")))
+                placa_real = _filtrar_placa_modal(driver, wait, placa)
+                if not placa_real:
+                    log_container.warning(f"🚨 Placa {placa} não encontrada no ZUQ.")
+                    return "NAO_ENCONTRADA", ""
+                placa = placa_real
+
+            target_litros = limpa_numero(litros)
+            target_preco = limpa_numero(preco)
+            target_km = re.sub(r"\D", "", str(km)) if km else ""
+
+            candidatos = []
+            for linha in driver.find_elements(By.XPATH, "//tr[contains(@ng-repeat,'fuel')]"):
+                texto = linha.text
+                if not texto or not data_no_texto(texto, data):
+                    continue
+                tds = linha.find_elements(By.TAG_NAME, "td")
+                nums = [limpa_numero(td.text) for td in tds if limpa_numero(td.text) > 0]
+                l_ok = target_litros > 0 and any(abs(n - target_litros) < 0.1 for n in nums)
+                p_ok = target_preco > 0 and any(abs(n - target_preco) < 0.05 for n in nums)
+                k_ok = bool(target_km) and any(re.sub(r"\D", "", td.text) == target_km for td in tds)
+                candidatos.append((int(l_ok) + int(p_ok) + int(k_ok), linha, l_ok, p_ok, k_ok))
+
+            candidatos.sort(key=lambda c: c[0], reverse=True)
+            if not candidatos or candidatos[0][0] == 0:
+                return "CRIAR", placa
+
+            melhor_score, linha_encontrada, l_ok, p_ok, k_ok = candidatos[0]
+            if melhor_score == 1 and len(candidatos) > 1:
+                log_container.warning(f"⚠️ Ambíguo em {placa} ({data}) — pulando para conferência manual.")
+                return "ERRO", placa
+
+            tds_texto = [td.text.strip() for td in linha_encontrada.find_elements(By.TAG_NAME, "td")]
+            tem_zerado = any(t in ("0,00", "0.00") for t in tds_texto)
+            precisa_editar = (
+                (target_km and not k_ok)
+                or (target_preco > 0 and not p_ok)
+                or (target_litros > 0 and not l_ok)
+                or tem_zerado
+            )
+
+            if not precisa_editar:
+                log_container.info(f"✅ {placa} ({data}) já lançado e correto.")
+                return "OK", placa
+
+            try:
+                link = linha_encontrada.find_element(By.XPATH, ".//a[contains(@href,'/fuel/')]")
+                navegar_rapido(driver, link.get_attribute("href"), timeout=20)
+            except Exception:
+                clicar_seguro(driver, linha_encontrada)
+
+            btn_edit = wait.until(
+                EC.presence_of_element_located(
+                    (
+                        By.XPATH,
+                        "//a[contains(@class,'btn') and .//i[contains(@class,'icon-pencil') or contains(@class,'fa-pencil')]]",
+                    )
                 )
             )
-        ).click()
-        wait.until(EC.presence_of_element_located((By.NAME, "price")))
+            clicar_seguro(driver, btn_edit)
+            wait.until(EC.presence_of_element_located((By.NAME, "price")))
 
-        if target_preco > 0:
-            try:
-                preencher_campo_texto(driver, driver.find_element(By.NAME, "price"), preco)
-            except Exception:
-                pass
-        if target_litros > 0:
-            try:
-                preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_LITROS), litros)
-            except Exception:
-                pass
-        if km and km != "0":
-            try:
-                preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_KM), km)
-            except Exception:
-                pass
+            if target_preco > 0:
+                try:
+                    preencher_campo_texto(driver, driver.find_element(By.NAME, "price"), preco)
+                except Exception:
+                    pass
+            if target_litros > 0:
+                try:
+                    preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_LITROS), litros)
+                except Exception:
+                    pass
+            if km and km != "0":
+                try:
+                    preencher_campo_texto(driver, driver.find_element(By.XPATH, XP_KM), km)
+                except Exception:
+                    pass
 
-        salvou, km_removido = salvar_formulario(driver, wait, log_container)
-        if salvou and km_removido:
-            log_container.warning(f"⚠️ {placa} ({data}) atualizado sem KM (ZUQ rejeitou o KM {km}).")
-            return "ATUALIZADO_SEM_KM", ""
-        if salvou:
-            log_container.success(f"✏️ {placa} ({data}) atualizado!")
-            return "ATUALIZADO", ""
-        return "ERRO", ""
+            salvou, km_removido = salvar_formulario(driver, wait, log_container)
+            if salvou and km_removido:
+                log_container.warning(f"⚠️ {placa} ({data}) atualizado sem KM (ZUQ rejeitou o KM {km}).")
+                return "ATUALIZADO_SEM_KM", ""
+            if salvou:
+                log_container.success(f"✏️ {placa} ({data}) atualizado!")
+                return "ATUALIZADO", ""
+            return "ERRO", ""
 
-    except Exception as e:
-        fechar_alerta_se_existir(driver)
-        msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
-        log_container.error(f"❌ Erro ao conciliar {placa} ({data}) [{type(e).__name__}]: {msg_curta}")
-        return "ERRO", ""
+        except Exception as e:
+            fechar_alerta_se_existir(driver)
+            limpar_sobreposicoes(driver)
+            if tentativa == 0:
+                time.sleep(0.5)
+                continue
+            msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
+            log_container.error(f"❌ Erro ao conciliar {placa} ({data}) [{type(e).__name__}]: {msg_curta}")
+            return "ERRO", ""
 
 
 class LogSimples:
@@ -762,13 +794,13 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
     atualizar_kpis()
     driver = criar_driver()
-    wait = WebDriverWait(driver, 12)
+    wait = WebDriverWait(driver, 20)
 
     try:
         log_container.info("🌐 Conectando ao ZUQ...")
 
         def acao_login():
-            navegar_rapido(driver, URL_ZUQ, timeout=12)
+            navegar_rapido(driver, URL_ZUQ, timeout=20)
             campo_usuario = wait.until(EC.element_to_be_clickable((By.ID, "j_username")))
             campo_usuario.clear()
             campo_usuario.send_keys(USUARIO)
@@ -782,11 +814,14 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                 driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]").click()
             except NoSuchElementException:
                 campo_senha.send_keys(Keys.ENTER)
-            WebDriverWait(driver, 10).until(lambda d: "login" not in d.current_url.lower())
+            WebDriverWait(driver, 15).until(lambda d: "login" not in d.current_url.lower())
 
         executar_com_retry(acao_login, max_tentativas=3)
 
         base_url = URL_ZUQ.rsplit("/secure", 1)[0] if "/secure" in URL_ZUQ else URL_ZUQ.rstrip("/")
+        navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel", timeout=20)
+        wait.until(EC.presence_of_element_located((By.ID, "btn-allvehicles")))
+
         placas_inexistentes = set()
         placas_mapeadas = {}
         ultima_placa_filtrada = ""
@@ -855,9 +890,9 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
             # CRIAR NOVO ABASTECIMENTO
             ultima_placa_filtrada = ""
             try:
-                navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel/new", timeout=10)
-                time.sleep(0.35)
-                wait.until(EC.element_to_be_clickable((By.XPATH, XP_VEICULO))).click()
+                navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/fuel/new", timeout=20)
+                el_veic = wait.until(EC.presence_of_element_located((By.XPATH, XP_VEICULO)))
+                clicar_seguro(driver, el_veic)
                 time.sleep(0.25)
                 inp = driver.find_element(By.XPATH, XP_VEICULO + "//input")
                 inp.send_keys(Keys.CONTROL + "a")
@@ -869,14 +904,11 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     f"//div[contains(@class,'selectize-dropdown') and not(contains(@style,'display: none'))]"
                     f"//div[contains(@class,'option') and contains(.,'{placa_str}')]"
                 )
-                WebDriverWait(driver, 2.5).until(EC.element_to_be_clickable((By.XPATH, xp_opc_v)))
+                WebDriverWait(driver, 3.0).until(EC.presence_of_element_located((By.XPATH, xp_opc_v)))
                 opcoes_v = [el for el in driver.find_elements(By.XPATH, xp_opc_v) if el.is_displayed()]
                 if not opcoes_v:
                     raise RuntimeError(f"Veículo {placa_str} não apareceu no dropdown")
-                try:
-                    opcoes_v[0].click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", opcoes_v[0])
+                clicar_seguro(driver, opcoes_v[0])
                 time.sleep(0.25)
 
                 data_iso = datetime.strptime(data_str, "%d/%m/%Y").strftime("%Y-%m-%d")
@@ -942,8 +974,8 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
 
                 # Fornecedor
                 if FORNECEDOR.strip():
-                    el_forn = wait.until(EC.element_to_be_clickable((By.XPATH, XP_FORNECEDOR)))
-                    el_forn.click()
+                    el_forn = wait.until(EC.presence_of_element_located((By.XPATH, XP_FORNECEDOR)))
+                    clicar_seguro(driver, el_forn)
                     time.sleep(0.25)
                     inp_f = el_forn.find_element(By.XPATH, ".//input")
                     inp_f.send_keys(Keys.CONTROL + "a")
@@ -955,15 +987,12 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                         "//div[contains(@class,'option')]"
                     )
                     try:
-                        WebDriverWait(driver, 2.0).until(EC.element_to_be_clickable((By.XPATH, xp_opc_forn)))
+                        WebDriverWait(driver, 2.5).until(EC.presence_of_element_located((By.XPATH, xp_opc_forn)))
                     except TimeoutException:
                         pass
                     opcoes_f = [el for el in driver.find_elements(By.XPATH, xp_opc_forn) if el.is_displayed()]
                     if opcoes_f:
-                        try:
-                            opcoes_f[0].click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", opcoes_f[0])
+                        clicar_seguro(driver, opcoes_f[0])
                     else:
                         inp_f.send_keys(Keys.ENTER)
                     time.sleep(0.25)
@@ -982,6 +1011,7 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
                     log_container.error(f"❌ Falha ao salvar {placa_str} ({data_str}).")
                     contadores["erros"] += 1
             except Exception as e_c:
+                limpar_sobreposicoes(driver)
                 msg_curta = str(e_c).splitlines()[0] if str(e_c) else type(e_c).__name__
                 log_container.error(f"❌ Erro ao lançar {placa_str} ({data_str}) [{type(e_c).__name__}]: {msg_curta}")
                 contadores["erros"] += 1
