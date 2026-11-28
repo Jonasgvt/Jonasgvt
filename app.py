@@ -619,268 +619,6 @@ def salvar_formulario(driver, wait, log_container, exigir_sair_do_novo=False):
 
 
 # ---------------------------------------------------------
-# CONFERÊNCIA E CORREÇÃO DE MEDIDORES NO HODÔMETRO DO ZUQ
-# ---------------------------------------------------------
-def _parse_data_hora_zuq(texto_dt):
-    if not texto_dt:
-        return None
-    s = str(texto_dt).strip()
-    for fmt in (
-        "%d/%m/%y %H:%M",
-        "%d/%m/%Y %H:%M",
-        "%d/%m/%y %H:%M:%S",
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%y",
-        "%d/%m/%Y",
-    ):
-        try:
-            dt = datetime.strptime(s, fmt)
-            if "%y" in fmt and dt.year > datetime.now().year + 2:
-                return None
-            return dt
-        except ValueError:
-            continue
-    return None
-
-
-def _ler_leituras_odometro_ate_data(driver, dt_minima_alvo):
-    leituras = []
-    vistas = set()
-    pagina = 1
-    while True:
-        novas = 0
-        dt_mais_antiga_pag = None
-        for tr in driver.find_elements(By.XPATH, "//table//tbody//tr"):
-            try:
-                tds = [td.text.strip() for td in tr.find_elements(By.TAG_NAME, "td")]
-            except StaleElementReferenceException:
-                continue
-            if len(tds) < 3:
-                continue
-            km_tr = 0
-            dt_obj = None
-            dt_raw = ""
-            for cel in tds:
-                m_km = re.search(r"([\d\.]+)\s*km", cel, flags=re.IGNORECASE)
-                if m_km:
-                    km_tr = int(re.sub(r"\D", "", m_km.group(1)) or 0)
-                m_dt = re.search(r"(\d{2}/\d{2}/\d{2,4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)", cel)
-                if m_dt:
-                    dt_raw = m_dt.group(1)
-                    dt_obj = _parse_data_hora_zuq(dt_raw)
-            if km_tr > 0 and dt_obj is not None:
-                if dt_mais_antiga_pag is None or dt_obj < dt_mais_antiga_pag:
-                    dt_mais_antiga_pag = dt_obj
-                chave = (dt_raw, km_tr)
-                if chave not in vistas:
-                    vistas.add(chave)
-                    leituras.append((dt_obj, dt_raw, km_tr))
-                    novas += 1
-
-        if dt_minima_alvo is not None and dt_mais_antiga_pag is not None and dt_mais_antiga_pag < dt_minima_alvo:
-            break
-
-        prox = driver.find_elements(
-            By.XPATH,
-            "//ul[contains(@class,'pagination')]//li[not(contains(@class,'disabled'))]//a[contains(.,'Próxim') or contains(.,'Next') or contains(.,'›') or contains(.,'»')]",
-        )
-        if prox and novas > 0 and pagina < 25:
-            try:
-                primeiro_tr_antes = driver.find_elements(By.XPATH, "//table//tbody//tr[1]")
-                txt_antes = primeiro_tr_antes[0].text if primeiro_tr_antes else ""
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", prox[0])
-                time.sleep(0.2)
-                try:
-                    prox[0].click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", prox[0])
-                time.sleep(0.55)
-                try:
-                    WebDriverWait(driver, 2.5).until(
-                        lambda d: (
-                            d.find_elements(By.XPATH, "//table//tbody//tr[1]")[0].text
-                            if d.find_elements(By.XPATH, "//table//tbody//tr[1]")
-                            else ""
-                        )
-                        != txt_antes
-                    )
-                except TimeoutException:
-                    pass
-                pagina += 1
-                continue
-            except Exception:
-                break
-        break
-
-    leituras.sort(key=lambda x: x[0])
-    return leituras
-
-
-def _localizar_e_corrigir_medidor(driver, wait, dt_raw_alvo, km_atual_alvo, novo_km, log_container, rotulo=""):
-    """Rebusca a linha na tabela atual pelo dt_raw/KM (evitando StaleElement), abre menu e corrige."""
-    for _ in range(2):
-        try:
-            linhas_atuais = driver.find_elements(By.XPATH, "//table//tbody//tr")
-            linha_alvo = None
-            for tr in linhas_atuais:
-                txt = tr.text or ""
-                if dt_raw_alvo and dt_raw_alvo in txt:
-                    linha_alvo = tr
-                    break
-            if linha_alvo is None and km_atual_alvo:
-                km_fmt = f"{int(km_atual_alvo):,}".replace(",", ".")
-                for tr in linhas_atuais:
-                    txt = tr.text or ""
-                    if km_fmt in txt or str(km_atual_alvo) in re.sub(r"\D", "", txt):
-                        linha_alvo = tr
-                        break
-            if linha_alvo is None:
-                return False
-
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", linha_alvo)
-            time.sleep(0.25)
-
-            btn_menu = linha_alvo.find_element(
-                By.XPATH, ".//button[contains(@class,'dropdown-toggle') or .//i[contains(@class,'fa-bars')]]"
-            )
-            try:
-                btn_menu.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", btn_menu)
-            time.sleep(0.35)
-
-            link_corrigir = wait.until(
-                EC.element_to_be_clickable(
-                    (
-                        By.XPATH,
-                        "//ul[contains(@class,'dropdown-menu') and ancestor::*[contains(@class,'open')]]//a[@ng-click='setMeters(e)' or contains(.,'Corrigir medidores')] | //a[@ng-click='setMeters(e)' or contains(.,'Corrigir medidores')]",
-                    )
-                )
-            )
-            try:
-                link_corrigir.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", link_corrigir)
-            time.sleep(0.35)
-
-            campo_medidor = wait.until(
-                EC.visibility_of_element_located(
-                    (
-                        By.XPATH,
-                        "//div[contains(@class,'modal') and contains(@class,'in')]//input[@type='text'] | //input[contains(@class,'form-control') and @type='text']",
-                    )
-                )
-            )
-            preencher_campo_texto(driver, campo_medidor, str(novo_km))
-            time.sleep(0.25)
-
-            btn_corrigir = wait.until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//button[contains(@class,'btn-primary') and contains(.,'Corrigir')]")
-                )
-            )
-            try:
-                btn_corrigir.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", btn_corrigir)
-            time.sleep(0.55)
-            fechar_alerta_se_existir(driver)
-            log_container.info(f"🔧 Medidor corrigido para {novo_km} km ({rotulo}).")
-            return True
-        except StaleElementReferenceException:
-            time.sleep(0.2)
-            continue
-        except Exception as e:
-            msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
-            log_container.warning(f"⚠️ Não foi possível corrigir medidor ({rotulo}): {msg_curta}")
-            for xp_cancel in ("//button[contains(.,'Cancelar')]", "//button[@class='close']"):
-                btns = driver.find_elements(By.XPATH, xp_cancel)
-                if btns:
-                    try:
-                        driver.execute_script("arguments[0].click();", btns[0])
-                        break
-                    except Exception:
-                        pass
-            return False
-    return False
-
-
-def conferir_e_corrigir_hodometro(df, base_url, driver, wait, log_container, progress_bar):
-    log_container.info("🩺 Conferindo e corrigindo KM no hodômetro do ZUQ...")
-    navegar_rapido(driver, f"{base_url}/secure/manager/maintenance/#/odometer", timeout=12)
-    wait.until(EC.element_to_be_clickable((By.ID, "btn-allvehicles")))
-    time.sleep(0.4)
-
-    df_ord = _ordenar_df(df)
-    dt_min_por_placa = {}
-    for _, r in df_ord.iterrows():
-        p = re.sub(r"[^A-Z0-9]", "", str(r["placa"]).upper())
-        dt_r = _parse_data_hora_zuq(f"{str(r['data']).strip()} {str(r.get('hora', '08:00:00')).strip()}")
-        if p and dt_r is not None:
-            if p not in dt_min_por_placa or dt_r < dt_min_por_placa[p]:
-                dt_min_por_placa[p] = dt_r
-
-    placas_unicas = list(
-        dict.fromkeys(re.sub(r"[^A-Z0-9]", "", str(p).upper()) for p in df_ord["placa"] if str(p).strip())
-    )
-    placas_ausentes = set()
-    placas_corrigidas = {}
-    corrigidos_count = 0
-
-    for idx_p, placa in enumerate(placas_unicas):
-        progress_bar.progress(
-            (idx_p + 1) / max(1, len(placas_unicas)),
-            text=f"Hodômetro {idx_p + 1}/{len(placas_unicas)} ({placa})...",
-        )
-        try:
-            placa_real = _filtrar_placa_modal(driver, wait, placa)
-            if not placa_real:
-                placas_ausentes.add(placa)
-                continue
-            if placa_real != placa:
-                placas_corrigidas[placa] = placa_real
-
-            leituras = _ler_leituras_odometro_ate_data(driver, dt_min_por_placa.get(placa))
-            linhas_placa = df_ord[
-                df_ord["placa"].astype(str).str.upper().str.replace("-", "", regex=False).str.strip() == placa
-            ]
-
-            for _, row in linhas_placa.iterrows():
-                data_s = str(row["data"]).strip()
-                hora_s = str(row.get("hora", "08:00:00")).strip()
-                km_arq = int(re.sub(r"\D", "", str(row["km"])) or 0)
-                dt_arq = _parse_data_hora_zuq(f"{data_s} {hora_s}") or _parse_data_hora_zuq(data_s)
-                if km_arq == 0 or dt_arq is None:
-                    continue
-
-                for _, dt_raw, km_l in leituras:
-                    dt_l_obj = _parse_data_hora_zuq(dt_raw)
-                    if dt_l_obj is not None and dt_l_obj > dt_arq and km_l < km_arq:
-                        _filtrar_placa_modal(driver, wait, placa_real)
-                        if _localizar_e_corrigir_medidor(
-                            driver, wait, dt_raw, km_l, km_arq, log_container, rotulo=f"{placa_real} {dt_raw}"
-                        ):
-                            corrigidos_count += 1
-                            _filtrar_placa_modal(driver, wait, placa_real)
-                            leituras = _ler_leituras_odometro_ate_data(driver, dt_min_por_placa.get(placa))
-                            break
-        except Exception as e:
-            msg_curta = str(e).splitlines()[0] if str(e) else type(e).__name__
-            log_container.warning(f"⚠️ Falha no hodômetro de {placa} ({type(e).__name__}): {msg_curta}")
-            for xp_cancel in ("//button[contains(.,'Cancelar')]", "//button[@class='close']"):
-                btns = driver.find_elements(By.XPATH, xp_cancel)
-                if btns:
-                    try:
-                        driver.execute_script("arguments[0].click();", btns[0])
-                        break
-                    except Exception:
-                        pass
-
-    log_container.info(f"✅ Hodômetro conferido ({corrigidos_count} medidor(es) corrigido(s)). Fazendo entrada...")
-    return placas_ausentes, placas_corrigidas
-
-
-# ---------------------------------------------------------
 # CONCILIAÇÃO E ENTRADA POR VEÍCULO
 # ---------------------------------------------------------
 def conciliar_ou_criar_registro(
@@ -1049,10 +787,8 @@ def lancar_no_zuq(df, URL_ZUQ, USUARIO, SENHA, FORNECEDOR, log_container, progre
         executar_com_retry(acao_login, max_tentativas=3)
 
         base_url = URL_ZUQ.rsplit("/secure", 1)[0] if "/secure" in URL_ZUQ else URL_ZUQ.rstrip("/")
-        placas_inexistentes, placas_mapeadas = conferir_e_corrigir_hodometro(
-            df, base_url, driver, wait, log_container, progress_bar
-        )
-
+        placas_inexistentes = set()
+        placas_mapeadas = {}
         ultima_placa_filtrada = ""
 
         for idx, row in df.iterrows():
@@ -1326,7 +1062,7 @@ if verificar_senha():
                     st.rerun()
 
     with col_dir:
-        st.markdown("#### 2. Corrigir KM e dar entrada")
+        st.markdown("#### 2. Dar entrada no ZUQ")
 
         k1, k2, k3, k4 = st.columns(4)
         ui = {"ok": k1.empty(), "atualizados": k2.empty(), "criados": k3.empty(), "erros": k4.empty()}
@@ -1339,7 +1075,7 @@ if verificar_senha():
         stop_flag_path = os.path.join(tempfile.gettempdir(), "zuq_auto_stop.flag")
 
         b1, b2 = st.columns([3, 1])
-        btn_iniciar = b1.button("🚀 Corrigir KM e lançar", **STRETCH)
+        btn_iniciar = b1.button("🚀 Lançar abastecimentos", **STRETCH)
         btn_parar = b2.button("🛑 Parar", **STRETCH)
 
         if btn_parar:
